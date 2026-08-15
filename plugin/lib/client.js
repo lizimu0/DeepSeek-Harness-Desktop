@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
 
 		const CSS = `
 			.dbc-fallback{display:flex;align-items:center;gap:8px;width:calc(100% - 16px);margin:4px 8px;padding:7px 10px;border:1px solid rgba(128,128,128,.22);border-radius:10px;background:rgba(128,128,128,.08);color:inherit;font:inherit;font-size:12px;cursor:pointer;text-align:left}
-			.dbc-cloned{display:flex;align-items:center;gap:8px;background:transparent;border:none;width:100%;cursor:pointer;color:inherit;font:inherit;text-align:left}
+			.dbc-cloned{cursor:pointer}
 			.dbc-value{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;opacity:.9}
 			.dbc-value.dbc-err{opacity:.55;font-weight:400}
 			.dbc-overlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.45))}
@@ -191,15 +191,6 @@ window.__ModuleLoader__.load({
 		}
 
 		function placeCard(root, card) {
-			// Preferred seat: directly below the task-board entry, cloning its
-			// classes so both rows share identical padding/height/font.
-			const taskEntry = document.querySelector("[data-dsh-taskboard-entry]");
-			if (taskEntry !== null) {
-				const cls = typeof taskEntry.className === "string" ? taskEntry.className : "";
-				card.className = cls.trim() !== "" ? `${cls} dbc-cloned` : "dbc-fallback";
-				if (taskEntry.nextElementSibling !== card) taskEntry.insertAdjacentElement("afterend", card);
-				return true;
-			}
 			const anchor = settingsAnchor(root);
 			let target = null;
 			if (anchor !== null) {
@@ -209,7 +200,8 @@ window.__ModuleLoader__.load({
 				const rowEl = anchor.tagName === "BUTTON" || anchor.getAttribute("role") === "button"
 					? anchor
 					: anchor.querySelector("button, [role=\"button\"]");
-				const rowClass = (rowEl ?? anchor).className;
+				const styleSrc = rowEl ?? anchor;
+				const rowClass = styleSrc.className;
 				if (typeof rowClass === "string" && rowClass.trim() !== "") {
 					card.className = `${rowClass} dbc-cloned`;
 				} else {
@@ -267,13 +259,8 @@ window.__ModuleLoader__.load({
 					root = void 0;
 					placed = false;
 				}
-				if (placed && document.body.contains(card)) {
-					// Keep re-checking: a better seat (the task-board entry) may
-					// mount later than this card; placeCard is idempotent.
-					placeCard(root, card);
-					return;
-				}
 				if (placed) {
+					if (document.body.contains(card)) return;
 					rootObserver.disconnect();
 					root = void 0;
 					placed = false;
@@ -297,6 +284,34 @@ window.__ModuleLoader__.load({
 			refreshValue();
 			const timer = setInterval(refreshValue, POLL_MS);
 
+			// Wanted bottom stack: task-board entry above the balance card,
+			// balance card above settings. The card itself uses the stable
+			// settings-anchor path; the entry is moved down by this delayed
+			// one-shot timer - deliberately outside every MutationObserver so
+			// the task-board plugin's self-heal and this plugin never couple.
+			// Keep the task-board entry pinned above the balance card. A plain
+			// interval (never a MutationObserver) re-seats it whenever a shell
+			// re-render puts it back on top; hide/move/show happens inside one
+			// synchronous tick, so there is no visible jump.
+			const stackKeep = () => {
+				try {
+					const entry = document.querySelector("[data-dsh-taskboard-entry]");
+					const card = document.querySelector("button[data-dsh-balance-card]");
+					if (entry === null || card === null || !entry.isConnected || !card.isConnected) return;
+					if (entry.parentElement !== card.parentElement) return;
+					const seated = entry.nextElementSibling === card && entry.className === card.className;
+					if (seated) return;
+					entry.style.visibility = "hidden";
+					if (entry.nextElementSibling !== card) card.parentElement.insertBefore(entry, card);
+					if (card.className !== "" && entry.className !== card.className) entry.className = card.className;
+					entry.style.visibility = "";
+				} catch { }
+			};
+			setTimeout(() => {
+				stackKeep();
+				setInterval(stackKeep, 1500);
+			}, 80);
+
 			return () => {
 				disposed = true;
 				clearInterval(timer);
@@ -311,7 +326,6 @@ window.__ModuleLoader__.load({
 		return module.exports;
 	}
 });
-
 
 
 
