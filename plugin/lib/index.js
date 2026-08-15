@@ -384,6 +384,49 @@ async function collect(force) {
 	}
 }
 
+/** Alert thresholds from ~/.dsh/balance-alert.json (user-editable). */
+function alertConfig() {
+	const defaults = { enabled: true, lowBalance: 2, dailyBudget: 5 }
+	try {
+		return { ...defaults, ...JSON.parse(readFileSync(join(homedir(), '.dsh', 'balance-alert.json'), 'utf8')) }
+	} catch {
+		return defaults
+	}
+}
+
+const alertLedger = new Map()
+
+/** Raise at most one alert per logical key per local day. */
+function raiseAlert(key, message) {
+	const fullKey = `${localDateKey(Date.now())}:${key}`
+	if (alertLedger.has(fullKey)) return
+	alertLedger.set(fullKey, { key: fullKey, message, at: Date.now() })
+}
+
+/** Evaluate thresholds against cached provider balances and today's spend. */
+async function collectAlerts() {
+	const cfg = alertConfig()
+	if (cfg.enabled !== true) return []
+	const day = localDateKey(Date.now())
+	const providers = await providersOverview(false)
+	for (const p of providers) {
+		if (p.error === void 0 && typeof p.available === 'number' && p.available <= Number(cfg.lowBalance)) {
+			const cur = p.currency === 'USD' ? '$' : '\u00a5'
+			raiseAlert(`low:${p.id}`, `${p.displayName} 余额不足：${cur}${p.available.toFixed(2)}（阈值 ${cur}${cfg.lowBalance}）`)
+		}
+	}
+	try {
+		const budget = Number(cfg.dailyBudget)
+		const d = dailySummary()
+		if (budget > 0 && d.today.cost >= budget) {
+			raiseAlert('daily-budget', `今日预估费用 \u00a5${d.today.cost.toFixed(2)} 已达预算 \u00a5${budget}`)
+		}
+	} catch { /* stats unavailable: skip */ }
+	for (const k of alertLedger.keys()) {
+		if (!k.startsWith(day)) alertLedger.delete(k)
+	}
+	return [...alertLedger.values()]
+}
 function sendJson(res, payload) {
 	const body = JSON.stringify(payload)
 	res.writeHead(200, {
@@ -414,6 +457,17 @@ export function apply(ctx) {
 					sendJson(res, await collect(true))
 				} catch (error) {
 					sendJson(res, { error: String(error?.message ?? error) })
+				}
+			},
+		}),
+		ctx.webServer.register({
+			kind: 'exact',
+			path: '/balance-card/alerts',
+			handler: async (req, res) => {
+				try {
+					sendJson(res, { alerts: await collectAlerts() })
+				} catch (error) {
+					sendJson(res, { alerts: [], error: String(error?.message ?? error) })
 				}
 			},
 		}),

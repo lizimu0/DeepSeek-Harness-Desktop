@@ -82,6 +82,38 @@ internal static class Program
             Tray.DoubleClick += (s, e) => EnsureServerAndShow();
             Tray.Visible = true;
 
+            // Balance/budget alerts: poll the balance-card plugin and surface
+            // new alert keys as tray balloon tips (once per key per app run).
+            var alertClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            var seenAlerts = new System.Collections.Generic.HashSet<string>();
+            var alertTimer = new System.Windows.Forms.Timer();
+            alertTimer.Interval = 3000;
+            alertTimer.Tick += (s2, e2) =>
+            {
+                alertTimer.Interval = 5 * 60 * 1000;
+                try
+                {
+                    alertClient.GetStringAsync(Url + "/balance-card/alerts").ContinueWith(t =>
+                    {
+                        if (t.IsFaulted || Form == null) return;
+                        string body = t.Result;
+                        Form.BeginInvoke(new Action(() =>
+                        {
+                            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                                body, @"\{""key"":""(?<k>[^""]+)"",""message"":""(?<m>[^""]*)"""))
+                            {
+                                if (seenAlerts.Add(m.Groups["k"].Value))
+                                {
+                                    try { Tray.ShowBalloonTip(8000, "DeepSeek Harness", m.Groups["m"].Value, ToolTipIcon.Warning); } catch { }
+                                }
+                            }
+                        }));
+                    });
+                }
+                catch { /* server down: silent */ }
+            };
+            alertTimer.Start();
+
             var starter = new Thread(EnsureServerAndShow);
             starter.IsBackground = true;
             starter.Start();
@@ -434,6 +466,7 @@ internal class MainForm : Form
         base.OnFormClosing(e);
     }
 }
+
 
 
 
