@@ -1,0 +1,21 @@
+{
+  "name": "dsh-quick-chat",
+  "description": "Auto-provisions a dedicated Chat workspace for DeepSeek Harness web, so plain chatting needs no manual workspace picking.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/**/*.js",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT"
+}

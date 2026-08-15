@@ -24,6 +24,10 @@ DeepSeek Harness（DSH）轻量桌面套件：**约 1MB 的 WebView2 桌面壳**
 - **费用估算**：内置官方定价表（含 2026-08-17 起的峰谷定价，按日期与时段自动切换），分项计费 + 总费用
 - 主题跟随 dsh 官方令牌（`--dsw-alias-*`），明暗皮肤自适应；另附右侧面板分隔缝修复样式
 
+### quick-chat/ — dsh-quick-chat 插件
+
+解决"每次必须选工作区"的问题：dsh web 启动后自动创建「💬 聊天」工作区（目录 `~/DeepSeek-Chats`）。在工作区列表里选它一次，之后新会话默认就是纯聊天（界面会记住最近使用的工作区）；项目开发继续用各自的项目工作区——工作区与聊天兼得，类似 Qoder / Codex 的体验。
+
 ## 构建桌面壳
 
 需要 Windows（WebView2 Runtime 为 Win11 自带）与 .NET Framework 4.x（系统自带）：
@@ -60,3 +64,4 @@ DeepSeek 调价时，编辑 `plugin/lib/index.js` 顶部的 `DECKS` 数组新增
 ## 许可
 
 MIT © lizimu0
+
