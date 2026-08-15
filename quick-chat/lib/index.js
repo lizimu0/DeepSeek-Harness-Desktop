@@ -22,6 +22,7 @@ const MAX_ATTEMPTS = 30
 
 export function apply(ctx) {
 	let attempts = 0
+	let ensureTimer = null
 	const ensure = async () => {
 		try {
 			mkdirSync(CHAT_DIR, { recursive: true })
@@ -29,12 +30,13 @@ export function apply(ctx) {
 			try { ctx.logger?.info?.(`quick-chat: chat workspace ready (${workspace.id})`) } catch { }
 		} catch (error) {
 			if (attempts++ < MAX_ATTEMPTS) {
-				setTimeout(ensure, 1000)
+			ensureTimer = setTimeout(ensure, 1000)
 				return
 			}
 			try { ctx.logger?.warn?.(`quick-chat: gave up provisioning chat workspace: ${error}`) } catch { }
 		}
 	}
 	setTimeout(ensure, 500)
+	ctx.on('dispose', () => { if (ensureTimer !== null) clearTimeout(ensureTimer) })
 }
 

@@ -101,9 +101,7 @@ internal static class Program
             return;
         }
         Form.EnsureNavigated();
-        Form.Show();
-        if (Form.WindowState == FormWindowState.Minimized) Form.WindowState = FormWindowState.Normal;
-        Form.Activate();
+        Form.ActivateWindow();
     }
 
     private static void EnsureServerAndShow()
@@ -124,6 +122,7 @@ internal static class Program
                 }
             }
         }
+        if (Form != null) Form.SetSplashStatus("正在加载界面…");
         ShowWindow();
     }
 
@@ -189,7 +188,7 @@ internal static class Program
         {
             if (Probe(1500)) return true;
             if (ServerCmd != null && ServerCmd.HasExited) return false;
-            Thread.Sleep(1000);
+            Thread.Sleep(250);
         }
         return Probe(1500);
     }
@@ -316,10 +315,97 @@ internal class MainForm : Form
         int h = Math.Max(500, (int)Math.Min(840 * scale, area.Height * 0.88));
         Size = new Size(w, h);
         MinimumSize = new Size((int)(640 * scale), (int)(420 * scale));
+        BackColor = System.Drawing.Color.White;
         _web = new WebView2();
         _web.Dock = DockStyle.Fill;
+        try { _web.DefaultBackgroundColor = System.Drawing.Color.White; } catch { }
         Controls.Add(_web);
+        _web.CoreWebView2InitializationCompleted += (s, e) =>
+        {
+            try
+            {
+                if (e.IsSuccess) _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
+                    "(function(){function chk(){var ok=false;try{for(var i=0;i<document.body.children.length;i++){var n=document.body.children[i];if(n.tagName!=='SCRIPT'&&n.tagName!=='STYLE'&&n.getBoundingClientRect().height>50){ok=true;break}}}catch(x){}if(ok){try{window.chrome.webview.postMessage('dsh-ui-ready')}catch(x){}}else{setTimeout(chk,100)}}chk()})();");
+            }
+            catch { }
+        };
+        _web.WebMessageReceived += (s, e) =>
+        {
+            try { if (e.TryGetWebMessageAsString() == "dsh-ui-ready") BeginInvoke(new Action(HideSplash)); } catch { }
+        };
         try { _web.EnsureCoreWebView2Async(); } catch { }
+        BuildSplash();
+    }
+
+    private Panel _splash;
+    private PictureBox _splashPic;
+    private Label _splashLabel;
+
+    /** Branded splash shown instantly while WebView2 warms up and the page paints. */
+    private void BuildSplash()
+    {
+        _splash = new Panel();
+        _splash.Dock = DockStyle.Fill;
+        _splash.BackColor = System.Drawing.Color.White;
+        _splashPic = new PictureBox();
+        try
+        {
+            string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            string png = Path.Combine(exeDir, "icon.png");
+            if (File.Exists(png)) _splashPic.Image = new Bitmap(png);
+        }
+        catch { }
+        _splashPic.SizeMode = PictureBoxSizeMode.Zoom;
+        _splashPic.Size = new Size(110, 110);
+        _splashLabel = new Label();
+        _splashLabel.Text = "DeepSeek Harness 正在启动服务…";
+        _splashLabel.AutoSize = true;
+        _splashLabel.ForeColor = System.Drawing.Color.FromArgb(70, 70, 80);
+        _splashLabel.Font = new Font("Segoe UI", 11f);
+        _splash.Controls.Add(_splashPic);
+        _splash.Controls.Add(_splashLabel);
+        Controls.Add(_splash);
+        _splash.BringToFront();
+        _splash.Resize += (s2, e2) => CenterSplash();
+        CenterSplash();
+        var fallback = new System.Windows.Forms.Timer();
+        fallback.Interval = 8000;
+        fallback.Tick += (s2, e2) => { fallback.Stop(); HideSplash(); };
+        fallback.Start();
+    }
+
+    private void CenterSplash()
+    {
+        if (_splash == null || _splashPic == null || _splashLabel == null) return;
+        _splashPic.Left = (_splash.ClientSize.Width - _splashPic.Width) / 2;
+        _splashPic.Top = (_splash.ClientSize.Height - _splashPic.Height) / 2 - 40;
+        _splashLabel.Left = (_splash.ClientSize.Width - _splashLabel.Width) / 2;
+        _splashLabel.Top = _splashPic.Top + _splashPic.Height + 24;
+    }
+
+    /** Remove the splash once the web content has actually painted. */
+    public void HideSplash()
+    {
+        if (_splash == null) return;
+        _splash.Visible = false;
+        ActivateWindow();
+    }
+
+    /** Update the splash status line (safe from any thread). */
+    public void SetSplashStatus(string text)
+    {
+        if (_splash == null || _splashLabel == null) return;
+        if (InvokeRequired) { BeginInvoke(new Action<string>(SetSplashStatus), text); return; }
+        _splashLabel.Text = text;
+        CenterSplash();
+    }
+
+    /** Restore from minimized + focus. */
+    public void ActivateWindow()
+    {
+        Show();
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Activate();
     }
 
     public void EnsureNavigated()
@@ -348,6 +434,15 @@ internal class MainForm : Form
         base.OnFormClosing(e);
     }
 }
+
+
+
+
+
+
+
+
+
 
 
 

@@ -11,6 +11,10 @@ window.__ModuleLoader__.load({
 		const CSS = `
 			.dbc-fallback{display:flex;align-items:center;gap:8px;width:calc(100% - 16px);margin:4px 8px;padding:7px 10px;border:1px solid rgba(128,128,128,.22);border-radius:10px;background:rgba(128,128,128,.08);color:inherit;font:inherit;font-size:12px;cursor:pointer;text-align:left}
 			.dbc-cloned{cursor:pointer}
+			/* Bottom stack via flex order — zero DOM moving, stable from the very first paint. */
+			[data-dsh-taskboard-entry]{order:98 !important;height:34px !important;color:var(--dsw-alias-label-primary) !important;border-radius:12px !important;margin:4px -4px !important;padding:6px 2px 6px 10px !important;font-size:14px !important;line-height:22px !important;width:calc(100% + 8px) !important;box-sizing:border-box !important}
+			button[data-dsh-balance-card]{order:99 !important}
+			[class*="footArea"]{order:100 !important}
 			.dbc-value{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;opacity:.9}
 			.dbc-value.dbc-err{opacity:.55;font-weight:400}
 			.dbc-overlay{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.45))}
@@ -32,6 +36,54 @@ window.__ModuleLoader__.load({
 			.dbc-sessionlist{max-height:230px;overflow:auto}
 			.dbc-session .k{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.85}
 			.dbc-session .t{opacity:.6;font-size:11px;white-space:nowrap;margin-right:10px}
+			.dbc-statgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:4px 0 2px}
+			.dbc-stat{border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.2));border-radius:10px;padding:8px 10px}
+			.dbc-stat .h{font-size:11px;opacity:.6}
+			.dbc-stat .n{font-size:14px;font-weight:600;margin-top:2px;font-variant-numeric:tabular-nums}
+			.dbc-stat .c{font-size:11px;opacity:.7;margin-top:2px}
+			.dbc-heat{display:flex;flex-wrap:wrap;gap:3px;margin-top:8px}
+			.dbc-account{background:linear-gradient(135deg,rgba(59,130,246,.18),rgba(99,102,241,.10));border:1px solid rgba(59,130,246,.30);border-radius:12px;padding:12px 14px;margin:2px 0 4px}
+			.dbc-account-err{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.08));border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.2))}
+			.dbc-badge-off{color:#d97706;background:rgba(217,119,6,.12)}
+			.dbc-select{margin:2px 0 6px;padding:5px 10px;border-radius:8px;border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.28));background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.10));color:inherit;font:inherit;font-size:12px}
+			.dbc-provname{font-size:12px;opacity:.8;margin:2px 0 6px}
+			.dbc-price{width:100%;border-collapse:collapse;margin-top:6px;font-size:12px}
+			.dbc-price th{font-size:11px;opacity:.55;font-weight:500;text-align:left;padding:4px 8px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.25))}
+			.dbc-price td{padding:5px 8px;border-bottom:1px dashed var(--dsw-alias-border-l1,rgba(128,128,128,.14));font-variant-numeric:tabular-nums}
+			.dbc-price-me{font-weight:600}
+			.dbc-price-total td{border-bottom:none;font-weight:700}
+			.dbc-price-total td:last-child{color:#3fb950}
+			.dbc-models{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+			.dbc-model{display:grid;grid-template-columns:64px 1fr auto;align-items:center;gap:10px;border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.18));border-radius:10px;padding:6px 12px;font-size:12px}
+			.dbc-model-name{font-weight:600}
+			.dbc-model-tok{opacity:.65;font-variant-numeric:tabular-nums}
+			.dbc-model b{font-variant-numeric:tabular-nums}
+			.dbc-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+			.dbc-chip{border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.22));border-radius:999px;padding:3px 11px;font-size:11px;display:flex;gap:6px;align-items:center}
+			.dbc-chip span{opacity:.6}
+			.dbc-chip b{font-variant-numeric:tabular-nums}
+			.dbc-chip-hot{border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.10)}
+			.dbc-acct-head{display:flex;justify-content:space-between;align-items:center}
+			.dbc-acct-id{display:flex;gap:10px;align-items:center}
+			.dbc-logo{width:34px;height:34px;border-radius:50%;background:rgba(59,130,246,.12);color:#3b82f6;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:13px;flex:none}
+			.dbc-name{font-weight:600}
+			.dbc-sub{font-size:11px;opacity:.6}
+			.dbc-badge{font-size:11px;color:#16a34a;background:rgba(22,163,74,.12);border-radius:999px;padding:2px 9px;flex:none}
+			.dbc-amount{font-size:24px;font-weight:700;margin-top:8px;font-variant-numeric:tabular-nums}
+			.dbc-acct-line{font-size:11px;opacity:.6;margin-top:2px}
+			.dbc-stat .n{font-size:15px}
+			.dbc-cal{margin-top:10px}
+			.dbc-cal-head{display:flex;align-items:center;gap:6px;justify-content:center;margin-bottom:6px}
+			.dbc-cal-title{font-size:12px;min-width:86px;text-align:center}
+			.dbc-cal-nav{border:none;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12));border-radius:6px;cursor:pointer;color:inherit;padding:1px 9px;font-size:13px}
+			.dbc-cal-nav:hover{background:var(--dsw-alias-bg-layer-3,rgba(128,128,128,.22))}
+			.dbc-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+			.dbc-wk{font-size:10px;opacity:.5;text-align:center;padding-bottom:2px}
+			.dbc-day{aspect-ratio:1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.1));cursor:default}
+			.dbc-today{outline:1.5px solid rgba(59,130,246,.85)}
+			.dbc-legend{display:flex;gap:3px;align-items:center;justify-content:flex-end;font-size:10px;opacity:.75;margin-top:6px}
+			.dbc-legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+			.dbc-cell{width:13px;height:13px;border-radius:3px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
 			[data-dsh-frame]{column-gap:0 !important}
 			body :has(> [class*="sidebarCol"]){column-gap:0 !important}
 			[class*="splitHandle"]{width:4px !important}
@@ -82,54 +134,104 @@ window.__ModuleLoader__.load({
 			return String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 		}
 
-		function renderModal(data) {
-			const bal = data.balance ?? {};
-			const info = Array.isArray(bal.balance_infos) ? bal.balance_infos[0] : void 0;
-			const usage = data.usage ?? {};
-			const totals = usage.totals ?? {};
-			const cost = data.cost ?? {};
-			const rates = cost.rates ?? {};
+		function renderProviderCard(p) {
+			if (p === void 0 || p === null) return '<div class="dbc-row"><span class="k">余额</span><span class="v">--</span></div>';
+			const err = p.error !== void 0
+				? (p.error === "missing-api-key" ? "未配置密钥（.credentials.yaml）" : p.error === "unsupported-balance-endpoint" ? "该供应商暂不支持余额查询" : String(p.error))
+				: "";
+			const cur = p.currency === "USD" ? "$" : "\u00a5";
+			return `
+				<div class="dbc-account${err !== "" ? " dbc-account-err" : ""}">
+					<div class="dbc-acct-head">
+						<div class="dbc-acct-id">
+							<div class="dbc-logo">${esc(String(p.displayName ?? "?").slice(0, 2).toUpperCase())}</div>
+							<div><div class="dbc-name">${esc(p.displayName ?? p.id)}</div><div class="dbc-sub">API 余额</div></div>
+						</div>
+						<span class="dbc-badge${err !== "" ? " dbc-badge-off" : ""}">${err !== "" ? "离线" : "实时"}</span>
+					</div>
+					<div class="dbc-amount">${err !== "" ? "--" : cur + Number(p.available ?? 0).toFixed(2)}</div>
+					<div class="dbc-acct-line">${err !== "" ? esc(err) : `充值 ${cur}${Number(p.charged ?? 0).toFixed(2)} · 赠送 ${cur}${Number(p.granted ?? 0).toFixed(2)}`}</div>
+				</div>`;
+		}
 
+		function renderModal(data, provId) {
+			const provs = Array.isArray(data.providers) ? data.providers : [];
+			const prov = provs.find((p) => String(p.id) === String(provId)) ?? provs[0];
+			const d = data.daily;
+			const pv = (d !== void 0 && d !== null && prov !== void 0 ? d.providers?.[prov.id] : void 0)
+				?? { today: { input: 0, cacheRead: 0, output: 0, cost: 0 }, month: { input: 0, cacheRead: 0, output: 0, cost: 0 }, total: { input: 0, cacheRead: 0, output: 0, cost: 0 }, cacheRate: null, models: [] };
 			const row = (k, v, cls) => `<div class="dbc-row ${cls ?? ""}"><span class="k">${k}</span><span class="v">${v}</span></div>`;
+			const num = (n) => Number(n ?? 0).toLocaleString("en-US");
 
-			let balanceHtml;
-			if (bal.error !== void 0) {
-				balanceHtml = row("获取失败", bal.error === "missing-api-key" ? "未找到 DEEPSEEK_API_KEY" : String(bal.error));
-			} else if (info === void 0) {
-				balanceHtml = row("余额", "--");
-			} else {
-				balanceHtml =
-					row("总余额", fmtMoney(Number(info.total_balance))) +
-					row("充值余额", fmtMoney(Number(info.topped_up_balance))) +
-					row("赠送余额", fmtMoney(Number(info.granted_balance)));
+			const selHtml = provs.length > 1
+				? `<select id="dbc-prov" class="dbc-select">${provs.map((p) => `<option value="${esc(p.id)}"${prov !== void 0 && p.id === prov.id ? " selected" : ""}>${esc(p.displayName ?? p.id)}</option>`).join("")}</select>`
+				: provs.length === 1 ? `<div class="dbc-provname">${esc(provs[0].displayName ?? provs[0].id)}</div>` : "";
+
+			const card = (label, b) => `<div class="dbc-stat"><div class="n">${num(b.input + b.cacheRead + b.output)}</div><div class="c">${fmtMoney(b.cost)}</div><div class="h">${label}</div></div>`;
+			const statHtml =
+				"<h3>Token 用量</h3>" +
+				`<div class="dbc-statgrid">${card("今日", pv.today)}${card("本月", pv.month)}${card("累计", pv.total)}</div>` +
+				row("缓存命中率", pv.cacheRate === null || pv.cacheRate === void 0 ? "--" : (pv.cacheRate * 100).toFixed(1) + "%");
+
+			const models = Array.isArray(pv.models) ? pv.models : [];
+			const modelsHtml = models.length > 0
+				? `<div class="dbc-models">${models.map((m) => `<div class="dbc-model"><span class="dbc-model-name">${esc(String(m.model).replace("deepseek-v4-", ""))}</span><span class="dbc-model-tok">${fmtTokens(m.input + m.cacheRead + m.output)} tok</span><b>${fmtMoney(m.cost)}</b></div>`).join("")}</div>`
+				: "";
+
+			const pricing = Array.isArray(data.cost?.pricing) ? data.cost.pricing : [];
+			const myCost = (shortName) => {
+				const m = models.find((x) => String(x.model).replace("deepseek-v4-", "") === shortName)
+				return m === void 0 ? "--" : fmtMoney(m.cost)
 			}
-
-			const usageHtml =
-				row("输入（缓存未命中）", fmtTokens(Number(totals.uncachedInputTokens ?? 0))) +
-				row("输入（缓存命中）", fmtTokens(Number(totals.cacheReadTokens ?? 0))) +
-				row("输出", fmtTokens(Number(totals.outputTokens ?? 0))) +
-				row("会话 / 轮次", `${usage.sessionCount ?? usage.sessions ?? 0} / ${usage.turns ?? 0}`);
-
-			const costHtml =
-				row(`输入未命中（${rates.miss ?? "--"} 元/M）`, fmtMoney(cost.costMiss)) +
-				row(`缓存命中（${rates.hit ?? "--"} 元/M）`, fmtMoney(cost.costCache)) +
-				row(`输出（${rates.out ?? "--"} 元/M）`, fmtMoney(cost.costOut)) +
-				row("预估总费用", fmtMoney(cost.total), "dbc-total");
-
-			const sessionsHtml = (data.sessions ?? []).slice(0, 20).map((s) =>
-				`<div class="dbc-row dbc-session"><span class="k">${esc(s.title)}</span><span class="t">${fmtTokens(s.uncachedInputTokens + s.cacheReadTokens)} in · ${fmtTokens(s.outputTokens)} out</span><span class="v">${fmtMoney(s.cost)}</span></div>`
-			).join("");
+			const costHtml = pricing.length > 0
+				? `<table class="dbc-price"><thead><tr><th>模型</th><th>输入</th><th>缓存</th><th>输出</th><th>我的花费</th></tr></thead><tbody>` +
+					pricing.map((p) => `<tr><td>${esc(p.model)}</td><td>${p.miss}元/M</td><td>${p.hit}元/M</td><td>${p.out}元/M</td><td class="dbc-price-me">${myCost(p.model)}</td></tr>`).join("") +
+					`<tr class="dbc-price-total"><td>合计</td><td colspan="3"></td><td>${fmtMoney(pv.total.cost)}</td></tr>` +
+					`</tbody></table>`
+				: "";
 
 			return `
 				<h2>余额与用量<button class="dbc-close" type="button" aria-label="关闭">✕</button></h2>
-				<h3>账户余额（DeepSeek 官方）</h3>${balanceHtml}
-				<h3>Token 用量（本地会话统计）</h3>${usageHtml}
-				<h3>费用估算 · ${cost.model ?? ""}${cost.peak ? " · 高峰价" : ""}</h3>${costHtml}
-				<h3>按任务明细 · 按估算花费排序</h3><div class="dbc-sessionlist">${sessionsHtml}</div>
-				<div class="dbc-note">定价：${cost.deckLabel ?? "--"}；费用按 ${cost.model ?? "--"} 官方价估算，混合模型会话仅供参考。</div>
+				${selHtml}
+				<div id="dbc-account-slot">${renderProviderCard(prov)}</div>
+				${statHtml}
+				${modelsHtml}
+				<h3>费用估算${d !== void 0 && d !== null && d.peak ? " · 高峰价" : ""}</h3>${costHtml}
+				<div class="dbc-note">费用按各模型官方定价分别估算（${data.cost?.deckLabel ?? "--"}）；用量为本地会话统计并按所选供应商过滤。</div>
 				<button class="dbc-refresh" type="button">刷新余额</button>
-				<div class="dbc-updated">更新于 ${fmtTime(data.generatedAt)}</div>
 			`;
+		}
+		function mountCalendar(container, perDay) {
+			if (container === null || perDay === void 0) return;
+			const byDay = new Map(perDay.map((x) => [x.date, x.input + x.cacheRead + x.output]));
+			const maxAll = Math.max(1, ...byDay.values());
+			const now = new Date();
+			let year = now.getFullYear();
+			let month = now.getMonth();
+			const todayKey = (() => { const p = (x) => String(x).padStart(2, "0"); return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`; })();
+			const draw = () => {
+				const pad = (x) => String(x).padStart(2, "0");
+				let cells = "";
+				for (const w of ["一", "二", "三", "四", "五", "六", "日"]) cells += `<div class="dbc-wk">${w}</div>`;
+				const lead = (new Date(year, month, 1).getDay() + 6) % 7;
+				for (let i = 0; i < lead; i++) cells += "<div></div>";
+				const days = new Date(year, month + 1, 0).getDate();
+				for (let day = 1; day <= days; day++) {
+					const key = `${year}-${pad(month + 1)}-${pad(day)}`;
+					const v = byDay.get(key) ?? 0;
+					const a = v === 0 ? 0 : 0.15 + 0.85 * Math.sqrt(v / maxAll);
+					const bg = v === 0 ? "" : ` style="background:rgba(59,130,246,${a.toFixed(2)});color:${a > 0.55 ? "#fff" : "inherit"}"`;
+					const today = key === todayKey ? " dbc-today" : "";
+					cells += `<div class="dbc-day${today}"${bg} title="${key} · ${fmtTokens(v)} tok">${day}</div>`;
+				}
+				container.querySelector(".dbc-cal-grid").innerHTML = cells;
+				container.querySelector(".dbc-cal-title").textContent = `${year}年${month + 1}月`;
+			};
+			const prev = container.querySelector('[data-m="-1"]');
+			const next = container.querySelector('[data-m="1"]');
+			if (prev !== null) prev.addEventListener("click", () => { month -= 1; if (month < 0) { month = 11; year -= 1; } draw(); });
+			if (next !== null) next.addEventListener("click", () => { month += 1; if (month > 11) { month = 0; year += 1; } draw(); });
+			draw();
 		}
 
 		function openModal() {
@@ -148,7 +250,17 @@ window.__ModuleLoader__.load({
 			overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
 
 			const paint = (data) => {
-				modal.innerHTML = renderModal(data);
+				const first = Array.isArray(data.providers) && data.providers.length > 0 ? data.providers[0].id : null;
+				const current = modal.dataset.dbcProv ?? first;
+				modal.innerHTML = renderModal(data, current);
+				const provSel = modal.querySelector("#dbc-prov");
+				if (provSel !== null) {
+					provSel.value = String(current);
+					provSel.addEventListener("change", () => {
+						modal.dataset.dbcProv = provSel.value;
+						paint(data);
+					});
+				}
 				modal.querySelector(".dbc-close")?.addEventListener("click", close);
 				modal.querySelector(".dbc-refresh")?.addEventListener("click", async (e) => {
 					const btn = e.currentTarget;
@@ -235,15 +347,15 @@ window.__ModuleLoader__.load({
 				try {
 					const data = await getData(false);
 					if (disposed) return;
-					const bal = data.balance ?? {};
-					if (bal.error !== void 0) {
+					const prov = (data.providers ?? []).find((x) => x.id === "deepseek-official") ?? (data.providers ?? [])[0] ?? data.balance;
+					if (prov === void 0 || prov.error !== void 0) {
 						valueEl.textContent = "不可用";
 						valueEl.classList.add("dbc-err");
 						return;
 					}
-					const info = Array.isArray(bal.balance_infos) ? bal.balance_infos[0] : void 0;
+					const cur = prov.currency === "USD" ? "$" : "\u00a5";
 					valueEl.classList.remove("dbc-err");
-					valueEl.textContent = info === void 0 ? "--" : fmtMoney(Number(info.total_balance));
+					valueEl.textContent = cur + Number(prov.available ?? 0).toFixed(2);
 				} catch {
 					valueEl.textContent = "离线";
 					valueEl.classList.add("dbc-err");
@@ -289,28 +401,6 @@ window.__ModuleLoader__.load({
 			// settings-anchor path; the entry is moved down by this delayed
 			// one-shot timer - deliberately outside every MutationObserver so
 			// the task-board plugin's self-heal and this plugin never couple.
-			// Keep the task-board entry pinned above the balance card. A plain
-			// interval (never a MutationObserver) re-seats it whenever a shell
-			// re-render puts it back on top; hide/move/show happens inside one
-			// synchronous tick, so there is no visible jump.
-			const stackKeep = () => {
-				try {
-					const entry = document.querySelector("[data-dsh-taskboard-entry]");
-					const card = document.querySelector("button[data-dsh-balance-card]");
-					if (entry === null || card === null || !entry.isConnected || !card.isConnected) return;
-					if (entry.parentElement !== card.parentElement) return;
-					const seated = entry.nextElementSibling === card && entry.className === card.className;
-					if (seated) return;
-					entry.style.visibility = "hidden";
-					if (entry.nextElementSibling !== card) card.parentElement.insertBefore(entry, card);
-					if (card.className !== "" && entry.className !== card.className) entry.className = card.className;
-					entry.style.visibility = "";
-				} catch { }
-			};
-			setTimeout(() => {
-				stackKeep();
-				setInterval(stackKeep, 1500);
-			}, 80);
 
 			return () => {
 				disposed = true;
