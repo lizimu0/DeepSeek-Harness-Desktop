@@ -191,6 +191,15 @@ window.__ModuleLoader__.load({
 		}
 
 		function placeCard(root, card) {
+			// Preferred seat: directly below the task-board entry, cloning its
+			// classes so both rows share identical padding/height/font.
+			const taskEntry = document.querySelector("[data-dsh-taskboard-entry]");
+			if (taskEntry !== null) {
+				const cls = typeof taskEntry.className === "string" ? taskEntry.className : "";
+				card.className = cls.trim() !== "" ? `${cls} dbc-cloned` : "dbc-fallback";
+				if (taskEntry.nextElementSibling !== card) taskEntry.insertAdjacentElement("afterend", card);
+				return true;
+			}
 			const anchor = settingsAnchor(root);
 			let target = null;
 			if (anchor !== null) {
@@ -258,8 +267,13 @@ window.__ModuleLoader__.load({
 					root = void 0;
 					placed = false;
 				}
+				if (placed && document.body.contains(card)) {
+					// Keep re-checking: a better seat (the task-board entry) may
+					// mount later than this card; placeCard is idempotent.
+					placeCard(root, card);
+					return;
+				}
 				if (placed) {
-					if (document.body.contains(card)) return;
 					rootObserver.disconnect();
 					root = void 0;
 					placed = false;
@@ -297,6 +311,7 @@ window.__ModuleLoader__.load({
 		return module.exports;
 	}
 });
+
 
 
 
