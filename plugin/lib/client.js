@@ -29,6 +29,9 @@ window.__ModuleLoader__.load({
 			.dbc-refresh:hover{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.2))}
 			.dbc-refresh:disabled{opacity:.5;cursor:wait}
 			.dbc-updated{margin-top:8px;font-size:11px;opacity:.5}
+			.dbc-sessionlist{max-height:230px;overflow:auto}
+			.dbc-session .k{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.85}
+			.dbc-session .t{opacity:.6;font-size:11px;white-space:nowrap;margin-right:10px}
 			[data-dsh-frame]{column-gap:0 !important}
 			body :has(> [class*="sidebarCol"]){column-gap:0 !important}
 			[class*="splitHandle"]{width:4px !important}
@@ -75,6 +78,10 @@ window.__ModuleLoader__.load({
 			return res.json();
 		}
 
+				function esc(s) {
+			return String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+		}
+
 		function renderModal(data) {
 			const bal = data.balance ?? {};
 			const info = Array.isArray(bal.balance_infos) ? bal.balance_infos[0] : void 0;
@@ -101,7 +108,7 @@ window.__ModuleLoader__.load({
 				row("输入（缓存未命中）", fmtTokens(Number(totals.uncachedInputTokens ?? 0))) +
 				row("输入（缓存命中）", fmtTokens(Number(totals.cacheReadTokens ?? 0))) +
 				row("输出", fmtTokens(Number(totals.outputTokens ?? 0))) +
-				row("会话 / 轮次", `${usage.sessions ?? 0} / ${usage.turns ?? 0}`);
+				row("会话 / 轮次", `${usage.sessionCount ?? usage.sessions ?? 0} / ${usage.turns ?? 0}`);
 
 			const costHtml =
 				row(`输入未命中（${rates.miss ?? "--"} 元/M）`, fmtMoney(cost.costMiss)) +
@@ -109,11 +116,16 @@ window.__ModuleLoader__.load({
 				row(`输出（${rates.out ?? "--"} 元/M）`, fmtMoney(cost.costOut)) +
 				row("预估总费用", fmtMoney(cost.total), "dbc-total");
 
+			const sessionsHtml = (data.sessions ?? []).slice(0, 20).map((s) =>
+				`<div class="dbc-row dbc-session"><span class="k">${esc(s.title)}</span><span class="t">${fmtTokens(s.uncachedInputTokens + s.cacheReadTokens)} in · ${fmtTokens(s.outputTokens)} out</span><span class="v">${fmtMoney(s.cost)}</span></div>`
+			).join("");
+
 			return `
 				<h2>余额与用量<button class="dbc-close" type="button" aria-label="关闭">✕</button></h2>
 				<h3>账户余额（DeepSeek 官方）</h3>${balanceHtml}
 				<h3>Token 用量（本地会话统计）</h3>${usageHtml}
 				<h3>费用估算 · ${cost.model ?? ""}${cost.peak ? " · 高峰价" : ""}</h3>${costHtml}
+				<h3>按任务明细 · 按估算花费排序</h3><div class="dbc-sessionlist">${sessionsHtml}</div>
 				<div class="dbc-note">定价：${cost.deckLabel ?? "--"}；费用按 ${cost.model ?? "--"} 官方价估算，混合模型会话仅供参考。</div>
 				<button class="dbc-refresh" type="button">刷新余额</button>
 				<div class="dbc-updated">更新于 ${fmtTime(data.generatedAt)}</div>
@@ -285,5 +297,6 @@ window.__ModuleLoader__.load({
 		return module.exports;
 	}
 });
+
 
 

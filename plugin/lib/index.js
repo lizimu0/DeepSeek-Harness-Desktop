@@ -95,57 +95,80 @@ async function fetchBalance(force) {
 	}
 }
 
-/** Sum tokenUsage totals across every cached session. */
+/** Sum tokenUsage totals across every cached session, keeping a per-session breakdown. */
 function usageTotals() {
 	const totals = { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 }
-	let sessions = 0
+	const breakdown = []
 	let turns = 0
 	try {
 		const cache = JSON.parse(readFileSync(join(homedir(), '.dsh', 'storages', 'session_projcache.json'), 'utf8'))
 		const table = cache?.tables?.sessions ?? {}
-		for (const session of Object.values(table)) {
-			sessions += 1
+		for (const [id, session] of Object.entries(table)) {
 			const rows = session?.rows ?? {}
 			const usage = rows.tokenUsage?.val?.totals
-			if (usage !== void 0 && usage !== null) {
-				totals.uncachedInputTokens += Number(usage.uncachedInputTokens ?? 0)
-				totals.cacheReadTokens += Number(usage.cacheReadTokens ?? 0)
-				totals.cacheWriteTokens += Number(usage.cacheWriteTokens ?? 0)
-				totals.outputTokens += Number(usage.outputTokens ?? 0)
+			const item = { id, title: '', uncachedInputTokens: 0, cacheReadTokens: 0, outputTokens: 0, turns: 0, lastPromptAt: null }
+			const rawTitle = rows.title?.val
+			if (typeof rawTitle === 'string' && rawTitle.trim() !== '') {
+				item.title = rawTitle.trim()
+			} else {
+				const cwd = session?.identity?.cwd
+				item.title = typeof cwd === 'string' && cwd !== '' ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? '未命名') : '未命名'
 			}
-			turns += Number(rows.sessionStats?.val?.turns ?? 0)
+			if (usage !== void 0 && usage !== null) {
+				item.uncachedInputTokens = Number(usage.uncachedInputTokens ?? 0)
+				item.cacheReadTokens = Number(usage.cacheReadTokens ?? 0)
+				item.outputTokens = Number(usage.outputTokens ?? 0)
+				totals.uncachedInputTokens += item.uncachedInputTokens
+				totals.cacheReadTokens += item.cacheReadTokens
+				totals.cacheWriteTokens += Number(usage.cacheWriteTokens ?? 0)
+				totals.outputTokens += item.outputTokens
+			}
+			item.turns = Number(rows.sessionStats?.val?.turns ?? 0)
+			turns += item.turns
+			item.lastPromptAt = rows.sessionListMetadata?.val?.lastPromptAt ?? null
+			breakdown.push(item)
 		}
 	} catch {
-		return { totals, sessions: 0, turns: 0, error: 'projcache-unavailable' }
+		return { totals, breakdown, sessionCount: 0, turns: 0, error: 'projcache-unavailable' }
 	}
-	return { totals, sessions, turns }
+	return { totals, breakdown, sessionCount: breakdown.length, turns }
 }
 
-function estimateCost(totals) {
+function currentRates() {
 	const deck = currentDeck()
 	const peak = deck.peakWindows && isPeak()
-	const rates = deckRates(deck, DEFAULT_MODEL, peak)
+	return { deck, peak, rates: deckRates(deck, DEFAULT_MODEL, peak) }
+}
+
+function costFor(totals, rates) {
 	const costMiss = (totals.uncachedInputTokens / 1e6) * rates.miss
 	const costCache = (totals.cacheReadTokens / 1e6) * rates.hit
 	const costOut = (totals.outputTokens / 1e6) * rates.out
+	return { costMiss, costCache, costOut, total: costMiss + costCache + costOut }
+}
+
+function estimateCost(totals) {
+	const { deck, peak, rates } = currentRates()
 	return {
 		model: DEFAULT_MODEL,
 		deckLabel: deck.label,
 		peak,
 		rates,
-		costMiss,
-		costCache,
-		costOut,
-		total: costMiss + costCache + costOut,
+		...costFor(totals, rates),
 	}
 }
 
 async function collect(force) {
 	const [balance, usage] = await Promise.all([fetchBalance(force), Promise.resolve(usageTotals())])
+	const { rates } = currentRates()
+	const sessions = usage.breakdown
+		.map((item) => ({ ...item, cost: costFor(item, rates).total }))
+		.sort((a, b) => b.cost - a.cost || (b.lastPromptAt ?? 0) - (a.lastPromptAt ?? 0))
 	return {
 		balance,
 		usage,
 		cost: estimateCost(usage.totals),
+		sessions,
 		generatedAt: Date.now(),
 	}
 }
@@ -188,3 +211,5 @@ export function apply(ctx) {
 		for (const dispose of disposers.splice(0)) dispose()
 	})
 }
+
+
