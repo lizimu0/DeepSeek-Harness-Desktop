@@ -17,7 +17,7 @@ export const name = 'quick-chat'
 export const inject = ['workspaceRegistry']
 
 const CHAT_DIR = join(homedir(), 'DeepSeek-Chats')
-const CHAT_TITLE = '💬 聊天'
+const CHAT_TITLE = 'chat'
 const MAX_ATTEMPTS = 30
 
 export function apply(ctx) {
@@ -37,3 +37,4 @@ export function apply(ctx) {
 	}
 	setTimeout(ensure, 500)
 }
+
