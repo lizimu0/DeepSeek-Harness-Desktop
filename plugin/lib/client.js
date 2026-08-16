@@ -366,23 +366,21 @@ window.__ModuleLoader__.load({
 			card.addEventListener("click", openModal);
 
 			const valueEl = card.querySelector(".dbc-value");
-				// 模型切换即时刷新：只观察模型按钮的 aria-label/title（不含 childList，避免流式输出触发），防抖 1s。
+				// 模型切换即时刷新：body 级观察 aria-label 变化（不随按钮重建丢失），防抖 300ms。
 				let modelDebounce = null;
 				const modelObs = new MutationObserver(() => {
 					if (modelDebounce !== null) return;
-					modelDebounce = setTimeout(() => { modelDebounce = null; refreshValue(); }, 1000);
+					modelDebounce = setTimeout(() => { modelDebounce = null; refreshValue(); }, 300);
 				});
-				const watchModels = () => {
-					for (const b of document.querySelectorAll('button[aria-label^="选择模型"]')) {
-						try { modelObs.observe(b, { attributes: true, attributeFilter: ["aria-label", "title"] }); } catch { }
-					}
-				};
+				try { modelObs.observe(document.body, { attributes: true, attributeFilter: ["aria-label"], subtree: true }); } catch { }
 			let disposed = false;
 
 			const refreshValue = async () => {
 				if (disposed) return;
 				try {
-					const data = await getData(false);
+					const res = await fetch("/balance-card/balance", { cache: "no-store" });
+					if (!res.ok) throw new Error("http-" + res.status);
+					const data = await res.json();
 					if (disposed) return;
 					const wanted = readCurrentProviderSafe();
 					const all = data.providers ?? [];
@@ -422,7 +420,7 @@ window.__ModuleLoader__.load({
 				if (placed) rootObserver.observe(root, { childList: true, subtree: true });
 			};
 
-			const waitObserver = new MutationObserver(() => { tryPlace(); watchModels(); });
+			const waitObserver = new MutationObserver(() => { tryPlace(); });
 			waitObserver.observe(document.body, { childList: true, subtree: true });
 			const rootObserver = new MutationObserver(() => {
 				if (root === void 0 || !root.isConnected || !root.contains(card)) {

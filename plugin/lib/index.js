@@ -488,6 +488,17 @@ export function apply(ctx) {
 				}
 			},
 		}),
+		ctx.webServer.register({
+			kind: 'exact',
+			path: '/balance-card/balance',
+			handler: async (req, res) => {
+				try {
+					sendJson(res, { providers: await providersOverview(false), generatedAt: Date.now() })
+				} catch (error) {
+					sendJson(res, { providers: [], error: String(error?.message ?? error) })
+				}
+			},
+		}),
 	]
 	ctx.on('dispose', () => {
 		for (const dispose of disposers.splice(0)) dispose()
