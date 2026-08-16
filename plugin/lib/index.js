@@ -163,8 +163,12 @@ async function providersOverview(force) {
 			catch (error) { data = { error: String(error?.message ?? error) } }
 		}
 			const offset = balanceOffsets()[p.id]
-			if (data.error === void 0 && typeof data.available === 'number' && typeof offset === 'number') {
-				data = { ...data, available: data.available + offset, granted: (Number.isFinite(data.granted) ? data.granted : 0) + offset }
+			if (typeof offset === 'number') {
+				if (data.error === void 0 && typeof data.available === 'number') {
+					data = { ...data, available: data.available + offset, granted: (Number.isFinite(data.granted) ? data.granted : 0) + offset }
+				} else if (data.error === 'unsupported-balance-endpoint') {
+					data = { kind: 'balance', currency: 'CNY', available: offset, charged: 0, granted: offset }
+				}
 			}
 		providersCache.set(p.id, { at: now, data })
 		return { id: p.id, displayName: p.displayName, ...data }

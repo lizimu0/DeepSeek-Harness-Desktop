@@ -124,6 +124,32 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(el);
 		}
 
+		/** Current provider from the model-select button's React fiber (read-only walk). */
+		function readCurrentProviderSafe() {
+			try {
+				const btn = document.querySelector('button[aria-label^="选择模型"]');
+				if (btn === null) return null;
+				const fiberKey = Object.keys(btn).find((k) => k.startsWith('__reactFiber$'));
+				if (fiberKey === undefined) return null;
+				let fiber = btn[fiberKey];
+				for (let depth = 0; fiber !== null && depth < 60; depth++) {
+					let hook = fiber.memoizedState;
+					for (let hop = 0; hook != null && hop < 20; hop++) {
+						const ms = hook.memoizedState;
+						if (ms !== null && typeof ms === "object" && !Array.isArray(ms)
+							&& ms.current !== null && typeof ms.current === "object"
+							&& typeof ms.current.provider === "string"
+							&& typeof ms.current.model === "string"
+							&& Array.isArray(ms.groups)) {
+							return ms.current.provider;
+						}
+						hook = hook.next;
+					}
+					fiber = fiber.return;
+				}
+			} catch { }
+			return null;
+		}
 		async function getData(force) {
 			const res = await fetch(force ? "/balance-card/refresh" : "/balance-card/data", { cache: "no-store" });
 			if (!res.ok) throw new Error("http-" + res.status);
@@ -340,6 +366,17 @@ window.__ModuleLoader__.load({
 			card.addEventListener("click", openModal);
 
 			const valueEl = card.querySelector(".dbc-value");
+				// 模型切换即时刷新：只观察模型按钮的 aria-label/title（不含 childList，避免流式输出触发），防抖 1s。
+				let modelDebounce = null;
+				const modelObs = new MutationObserver(() => {
+					if (modelDebounce !== null) return;
+					modelDebounce = setTimeout(() => { modelDebounce = null; refreshValue(); }, 1000);
+				});
+				const watchModels = () => {
+					for (const b of document.querySelectorAll('button[aria-label^="选择模型"]')) {
+						try { modelObs.observe(b, { attributes: true, attributeFilter: ["aria-label", "title"] }); } catch { }
+					}
+				};
 			let disposed = false;
 
 			const refreshValue = async () => {
@@ -347,7 +384,9 @@ window.__ModuleLoader__.load({
 				try {
 					const data = await getData(false);
 					if (disposed) return;
-					const prov = (data.providers ?? []).find((x) => x.id === "deepseek-official") ?? (data.providers ?? [])[0] ?? data.balance;
+					const wanted = readCurrentProviderSafe();
+					const all = data.providers ?? [];
+					const prov = all.find((x) => x.id === wanted) ?? all.find((x) => x.id === "deepseek-official") ?? all[0] ?? data.balance;
 					if (prov === void 0 || prov.error !== void 0) {
 						valueEl.textContent = "不可用";
 						valueEl.classList.add("dbc-err");
@@ -383,7 +422,7 @@ window.__ModuleLoader__.load({
 				if (placed) rootObserver.observe(root, { childList: true, subtree: true });
 			};
 
-			const waitObserver = new MutationObserver(() => tryPlace());
+			const waitObserver = new MutationObserver(() => { tryPlace(); watchModels(); });
 			waitObserver.observe(document.body, { childList: true, subtree: true });
 			const rootObserver = new MutationObserver(() => {
 				if (root === void 0 || !root.isConnected || !root.contains(card)) {
