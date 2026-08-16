@@ -116,7 +116,7 @@ async function fetchProviderBalance(p, key) {
 		const body = await getJson(p.baseURL.replace(/\/$/, '') + '/user/info')
 		const d = body?.data
 		if (d === void 0) throw new Error('no-user-info')
-		return { kind: 'balance', currency: 'CNY', available: Number(d.totalBalance), charged: Number(d.chargeBalance), granted: Number(d.freeBalance) }
+		return { kind: 'balance', currency: 'CNY', available: Number(d.totalBalance), charged: Number(d.chargeBalance), granted: Number(d.freeBalance ?? 0) }
 	}
 	const base = p.baseURL.replace(/\/$/, '')
 	try {
@@ -130,6 +130,15 @@ async function fetchProviderBalance(p, key) {
 }
 
 const BALANCE_TTL_MS = 5 * 60 * 1000
+/** Manual balance offsets from ~/.dsh/balance-offsets.json (e.g. vouchers the provider API does not expose). */
+function balanceOffsets() {
+	try {
+		const parsed = JSON.parse(readFileSync(join(homedir(), '.dsh', 'balance-offsets.json'), 'utf8'))
+		return parsed !== null && typeof parsed === 'object' ? parsed : {}
+	} catch {
+		return {}
+	}
+}
 const providersCache = new Map()
 
 /** Balance snapshot for every configured provider (5 min TTL, per-provider). */
@@ -153,6 +162,10 @@ async function providersOverview(force) {
 			try { data = await fetchProviderBalance(p, key) }
 			catch (error) { data = { error: String(error?.message ?? error) } }
 		}
+			const offset = balanceOffsets()[p.id]
+			if (data.error === void 0 && typeof data.available === 'number' && typeof offset === 'number') {
+				data = { ...data, available: data.available + offset, granted: (Number.isFinite(data.granted) ? data.granted : 0) + offset }
+			}
 		providersCache.set(p.id, { at: now, data })
 		return { id: p.id, displayName: p.displayName, ...data }
 	}))
@@ -476,6 +489,7 @@ export function apply(ctx) {
 		for (const dispose of disposers.splice(0)) dispose()
 	})
 }
+
 
 
 
