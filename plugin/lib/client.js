@@ -372,7 +372,13 @@ window.__ModuleLoader__.load({
 					if (modelDebounce !== null) return;
 					modelDebounce = setTimeout(() => { modelDebounce = null; refreshValue(); }, 300);
 				});
-				try { modelObs.observe(document.body, { attributes: true, attributeFilter: ["aria-label"], subtree: true }); } catch { }
+				try { modelObs.observe(document.body, { attributes: true, attributeFilter: ["aria-label", "title"], subtree: true }); } catch { }
+				// 兜底轮询：每 5 秒检测 provider 是否变化（只读 fiber，变了才刷新）。
+				let lastProvider = readCurrentProviderSafe();
+				setInterval(() => {
+					const cur = readCurrentProviderSafe();
+					if (cur !== lastProvider) { lastProvider = cur; refreshValue(); }
+				}, 5000);
 			let disposed = false;
 
 			const refreshValue = async () => {
