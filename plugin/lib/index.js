@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -79,20 +79,33 @@ function configuredProviders() {
 		let section = ''
 		let current = null
 		for (const raw of lines) {
-			if (section === '' ) {
-				if (/^llm-pi-ai:\s*$/.test(raw)) section = 'llm'
+			// skip comments and blank lines
+			const line = raw.replace(/#.*$/, '')
+			if (line.trim() === '') continue
+			const indent = line.match(/^(\s*)/)[1].length
+			if (section === '') {
+				if (/^llm-pi-ai\s*:/.test(line)) section = 'llm'
 				continue
 			}
 			if (section === 'llm') {
-				if (/^ {2}providers:\s*$/.test(raw)) { section = 'providers'; continue }
-				if (/^\S/.test(raw)) { section = ''; current = null }
+				if (indent === 0) { section = ''; current = null; continue }
+				if (/^\s{1,3}providers\s*:/.test(line)) { section = 'providers'; continue }
 				continue
 			}
-			if (/^\S/.test(raw)) { section = ''; current = null; continue }
-			const idm = /^ {4}(\S[^:]*):\s*$/.exec(raw)
-			if (idm !== null) { current = { id: idm[1], displayName: idm[1], apiKeyEnv: '', baseURL: '' }; result.push(current); continue }
+			// section === 'providers'
+			if (indent === 0) { section = ''; current = null; continue }
+			// new provider entry: 3-6 spaces + key + colon (no value on same line)
+			if (indent >= 3 && indent <= 6 && /^\s{3,6}\S[^:]*:\s*$/.test(line)) {
+				const idm = /^\s+(\S[^:]*):\s*$/.exec(line)
+				if (idm !== null) {
+					current = { id: idm[1].trim(), displayName: idm[1].trim(), apiKeyEnv: '', baseURL: '' }
+					result.push(current)
+				}
+				continue
+			}
 			if (current === null) continue
-			const fm = /^ {6}(displayName|apiKeyEnv|baseURL):\s*(.+?)\s*$/.exec(raw)
+			// field lines: more indented than the provider key
+			const fm = /^\s+(displayName|apiKeyEnv|baseURL)\s*:\s*(.+?)\s*$/.exec(line)
 			if (fm !== null) current[fm[1]] = fm[2].replace(/^["']|["']$/g, '')
 		}
 	} catch { }
@@ -411,13 +424,26 @@ function alertConfig() {
 	}
 }
 
-const alertLedger = new Map()
+const ALERT_LEDGER_PATH = join(homedir(), '.dsh', 'balance-alert-ledger.json')
+
+function loadAlertLedger() {
+	try {
+		const raw = JSON.parse(readFileSync(ALERT_LEDGER_PATH, 'utf8'))
+		if (raw !== null && typeof raw === 'object') return new Map(Object.entries(raw))
+	} catch { }
+	return new Map()
+}
+
+const alertLedger = loadAlertLedger()
 
 /** Raise at most one alert per logical key per local day. */
 function raiseAlert(key, message) {
 	const fullKey = `${localDateKey(Date.now())}:${key}`
 	if (alertLedger.has(fullKey)) return
 	alertLedger.set(fullKey, { key: fullKey, message, at: Date.now() })
+	try {
+		writeFileSync(ALERT_LEDGER_PATH, JSON.stringify(Object.fromEntries(alertLedger)), 'utf8')
+	} catch { }
 }
 
 /** Evaluate thresholds against cached provider balances and today's spend. */
@@ -439,8 +465,14 @@ async function collectAlerts() {
 			raiseAlert('daily-budget', `今日预估费用 \u00a5${d.today.cost.toFixed(2)} 已达预算 \u00a5${budget}`)
 		}
 	} catch { /* stats unavailable: skip */ }
+	let pruned = false
 	for (const k of alertLedger.keys()) {
-		if (!k.startsWith(day)) alertLedger.delete(k)
+		if (!k.startsWith(day)) { alertLedger.delete(k); pruned = true }
+	}
+	if (pruned) {
+		try {
+			writeFileSync(ALERT_LEDGER_PATH, JSON.stringify(Object.fromEntries(alertLedger)), 'utf8')
+		} catch { }
 	}
 	return [...alertLedger.values()]
 }
