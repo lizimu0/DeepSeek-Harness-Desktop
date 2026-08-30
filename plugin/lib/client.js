@@ -381,6 +381,7 @@ window.__ModuleLoader__.load({
 				}, 5000);
 			let disposed = false;
 
+			const labelEl = card.querySelector(".dbc-label");
 			const refreshValue = async () => {
 				if (disposed) return;
 				try {
@@ -394,14 +395,21 @@ window.__ModuleLoader__.load({
 					if (prov === void 0 || prov.error !== void 0) {
 						valueEl.textContent = "不可用";
 						valueEl.classList.add("dbc-err");
+						if (labelEl !== null) labelEl.textContent = "余额";
 						return;
 					}
 					const cur = prov.currency === "USD" ? "$" : "\u00a5";
 					valueEl.classList.remove("dbc-err");
 					valueEl.textContent = cur + Number(prov.available ?? 0).toFixed(2);
+					if (labelEl !== null) {
+						const name = String(prov.displayName ?? prov.id ?? "余额");
+						labelEl.textContent = name.length > 8 ? name.slice(0, 7) + "…" : name;
+						labelEl.title = name;
+					}
 				} catch {
 					valueEl.textContent = "离线";
 					valueEl.classList.add("dbc-err");
+					if (labelEl !== null) labelEl.textContent = "余额";
 				}
 			};
 
