@@ -83,30 +83,59 @@ internal static class Program
             Tray.Visible = true;
 
             // Balance/budget alerts: poll the balance-card plugin and surface
-            // new alert keys as tray balloon tips (once per key per app run).
-            var alertClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(8) };
-            var seenAlerts = new System.Collections.Generic.HashSet<string>();
+            // new alert keys as tray balloon tips (once per key per local day,
+            // remembered across launcher restarts).
+            var alertClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            var seenAlerts = LoadSeenAlerts();
+            var seenDay = DateTime.Now.ToString("yyyyMMdd");
+            bool alertsEverSucceeded = false;
             var alertTimer = new System.Windows.Forms.Timer();
             alertTimer.Interval = 3000;
             alertTimer.Tick += (s2, e2) =>
             {
-                alertTimer.Interval = 5 * 60 * 1000;
+                string today = DateTime.Now.ToString("yyyyMMdd");
+                if (today != seenDay) { seenDay = today; seenAlerts.Clear(); }
                 try
                 {
                     alertClient.GetStringAsync(Url + "/balance-card/alerts").ContinueWith(t =>
                     {
-                        if (t.IsFaulted || Form == null) return;
-                        string body = t.Result;
+                        if (Form == null) return;
                         Form.BeginInvoke(new Action(() =>
                         {
-                            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
-                                body, @"\{""key"":""(?<k>[^""]+)"",""message"":""(?<m>[^""]*)"""))
+                            if (t.IsFaulted)
                             {
-                                if (seenAlerts.Add(m.Groups["k"].Value))
+                                // 服务未就绪时 15 秒后重试；成功过一次后保持 5 分钟节奏
+                                if (!alertsEverSucceeded) alertTimer.Interval = 15000;
+                                return;
+                            }
+                            alertsEverSucceeded = true;
+                            alertTimer.Interval = 5 * 60 * 1000;
+                            bool added = false;
+                            try
+                            {
+                                var root = new System.Web.Script.Serialization.JavaScriptSerializer()
+                                    .Deserialize<System.Collections.Generic.Dictionary<string, object>>(t.Result);
+                                object listObj;
+                                if (root != null && root.TryGetValue("alerts", out listObj) && listObj is System.Collections.ArrayList)
                                 {
-                                    try { Tray.ShowBalloonTip(8000, "DeepSeek Harness", m.Groups["m"].Value, ToolTipIcon.Warning); } catch { }
+                                    foreach (object item in (System.Collections.ArrayList)listObj)
+                                    {
+                                        var entry = item as System.Collections.Generic.Dictionary<string, object>;
+                                        if (entry == null) continue;
+                                        object kv, mv;
+                                        string key = entry.TryGetValue("key", out kv) ? kv as string : null;
+                                        string message = entry.TryGetValue("message", out mv) ? mv as string : null;
+                                        if (key == null || message == null) continue;
+                                        if (seenAlerts.Add(key))
+                                        {
+                                            added = true;
+                                            try { Tray.ShowBalloonTip(8000, "DeepSeek Harness", message, ToolTipIcon.Warning); } catch { }
+                                        }
+                                    }
                                 }
                             }
+                            catch { /* malformed body: skip */ }
+                            if (added) SaveSeenAlerts(seenAlerts);
                         }));
                     });
                 }
@@ -205,6 +234,18 @@ internal static class Program
     {
         string log = LogPath();
         Directory.CreateDirectory(Path.GetDirectoryName(log));
+        // 日志无限追加会膨胀，超过 5MB 滚动为 .old
+        try
+        {
+            FileInfo fi = new FileInfo(log);
+            if (fi.Exists && fi.Length > 5 * 1024 * 1024)
+            {
+                string old = log + ".old";
+                if (File.Exists(old)) File.Delete(old);
+                File.Move(log, old);
+            }
+        }
+        catch { }
         var args = "/c \"\"" + node + "\" \"" + bin + "\" web --port " + Port + " >> \"" + log + "\" 2>&1\"";
         var psi = new ProcessStartInfo("cmd.exe", args);
         psi.UseShellExecute = false;
@@ -227,23 +268,91 @@ internal static class Program
 
     private static string FindDshBin()
     {
-        var candidates = new System.Collections.Generic.List<string>();
+        // 全局安装（npm i -g）是刻意安装的版本，优先于 npx 运行残留的缓存
+        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        string global = Path.Combine(appData, "npm", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+        if (File.Exists(global)) return global;
+
         string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         string npxRoot = Path.Combine(local, "npm-cache", "_npx");
         if (Directory.Exists(npxRoot))
         {
-            foreach (var dir in Directory.GetDirectories(npxRoot))
+            string best = null;
+            Version bestVersion = null;
+            DateTime bestTime = DateTime.MinValue;
+            foreach (string dir in Directory.GetDirectories(npxRoot))
             {
                 string p = Path.Combine(dir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
-                if (File.Exists(p)) candidates.Add(p);
+                if (!File.Exists(p)) continue;
+                Version v = ReadPackageVersion(Path.Combine(dir, "node_modules", "@deepseek-ai", "dsh", "package.json"));
+                DateTime t = File.GetLastWriteTimeUtc(p);
+                bool better;
+                if (best == null) better = true;
+                else if (v != null && bestVersion != null) better = v > bestVersion || (v == bestVersion && t > bestTime);
+                else if (v != null) better = true;
+                else if (bestVersion != null) better = false;
+                else better = t > bestTime;
+                if (better) { best = p; bestVersion = v; bestTime = t; }
+            }
+            if (best != null) return best;
+        }
+        return null;
+    }
+
+    /** Parse "version" out of package.json (prerelease suffix stripped for comparability). */
+    private static Version ReadPackageVersion(string pkgJson)
+    {
+        try
+        {
+            foreach (string line in File.ReadLines(pkgJson))
+            {
+                string s = line.Trim();
+                if (!s.StartsWith("\"version\"")) continue;
+                int colon = s.IndexOf(':');
+                if (colon < 0) continue;
+                string val = s.Substring(colon + 1).Trim().Trim(',').Trim('"');
+                int dash = val.IndexOf('-');
+                if (dash > 0) val = val.Substring(0, dash);
+                Version v;
+                if (Version.TryParse(val, out v)) return v;
+                return null;
             }
         }
-        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string global = Path.Combine(appData, "npm", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
-        if (File.Exists(global)) candidates.Add(global);
-        if (candidates.Count == 0) return null;
-        candidates.Sort((a, b) => File.GetLastWriteTimeUtc(b).CompareTo(File.GetLastWriteTimeUtc(a)));
-        return candidates[0];
+        catch { }
+        return null;
+    }
+
+    static readonly string SeenAlertsPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeepSeekHarness", "seen-alerts.txt");
+
+    /** Already-shown alert keys for today; stale days are ignored. */
+    private static System.Collections.Generic.HashSet<string> LoadSeenAlerts()
+    {
+        var seen = new System.Collections.Generic.HashSet<string>();
+        try
+        {
+            string[] lines = File.ReadAllLines(SeenAlertsPath);
+            if (lines.Length > 0 && lines[0] == "v1:" + DateTime.Now.ToString("yyyyMMdd"))
+            {
+                for (int i = 1; i < lines.Length; i++)
+                    if (lines[i].Length > 0) seen.Add(lines[i]);
+            }
+        }
+        catch { }
+        return seen;
+    }
+
+    private static void SaveSeenAlerts(System.Collections.Generic.HashSet<string> seen)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(SeenAlertsPath));
+            var lines = new System.Collections.Generic.List<string>();
+            lines.Add("v1:" + DateTime.Now.ToString("yyyyMMdd"));
+            lines.AddRange(seen);
+            File.WriteAllLines(SeenAlertsPath, lines.ToArray());
+        }
+        catch { }
     }
 
     private static string FindNode()
