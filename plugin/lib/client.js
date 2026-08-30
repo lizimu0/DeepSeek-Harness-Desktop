@@ -216,24 +216,45 @@ window.__ModuleLoader__.load({
 					`</tbody></table>`
 				: "";
 
+			const calendarHtml = `<h3>每日用量</h3>
+				<div class="dbc-cal">
+					<div class="dbc-cal-head"><button class="dbc-cal-nav" type="button" data-m="-1">‹</button><div class="dbc-cal-title"></div><button class="dbc-cal-nav" type="button" data-m="1">›</button></div>
+					<div class="dbc-cal-grid"></div>
+					<div class="dbc-legend"><i style="background:rgba(59,130,246,.3)"></i><i style="background:rgba(59,130,246,.6)"></i><i style="background:rgba(59,130,246,.95)"></i><span>少 → 多</span></div>
+				</div>`;
+
 			return `
 				<h2>余额与用量<button class="dbc-close" type="button" aria-label="关闭">✕</button></h2>
 				${selHtml}
 				<div id="dbc-account-slot">${renderProviderCard(prov)}</div>
 				${statHtml}
 				${modelsHtml}
-				<h3>费用估算${d !== void 0 && d !== null && d.peak ? " · 高峰价" : ""}</h3>${costHtml}
+				${calendarHtml}
+				<h3>费用估算${data.cost?.peak === true ? " · 高峰价" : ""}</h3>${costHtml}
 				<div class="dbc-note">费用按各模型官方定价分别估算（${data.cost?.deckLabel ?? "--"}）；用量为本地会话统计并按所选供应商过滤。</div>
 				<button class="dbc-refresh" type="button">刷新余额</button>
 			`;
 		}
-		function mountCalendar(container, perDay) {
+		function mountCalendar(container, perDay, saved) {
 			if (container === null || perDay === void 0) return;
 			const byDay = new Map(perDay.map((x) => [x.date, x.input + x.cacheRead + x.output]));
 			const maxAll = Math.max(1, ...byDay.values());
 			const now = new Date();
 			let year = now.getFullYear();
 			let month = now.getMonth();
+			if (typeof saved === "string") {
+				const savedParts = saved.split("-").map(Number);
+				if (savedParts.length === 2 && Number.isFinite(savedParts[0]) && Number.isFinite(savedParts[1])
+					&& savedParts[0] >= 2000 && savedParts[1] >= 0 && savedParts[1] <= 11) {
+					year = savedParts[0];
+					month = savedParts[1];
+				}
+			}
+			// keep the browsed month across repaints (provider switch re-renders the modal)
+			const remember = () => {
+				const host = container.closest(".dbc-modal");
+				if (host !== null) host.setAttribute("data-dbc-cal", `${year}-${month}`);
+			};
 			const todayKey = (() => { const p = (x) => String(x).padStart(2, "0"); return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`; })();
 			const draw = () => {
 				const pad = (x) => String(x).padStart(2, "0");
@@ -252,6 +273,7 @@ window.__ModuleLoader__.load({
 				}
 				container.querySelector(".dbc-cal-grid").innerHTML = cells;
 				container.querySelector(".dbc-cal-title").textContent = `${year}年${month + 1}月`;
+				remember();
 			};
 			const prev = container.querySelector('[data-m="-1"]');
 			const next = container.querySelector('[data-m="1"]');
@@ -272,13 +294,16 @@ window.__ModuleLoader__.load({
 			overlay.appendChild(modal);
 			document.body.appendChild(overlay);
 
-			const close = () => overlay.remove();
+			const onKey = (e) => { if (e.key === "Escape") close(); };
+			const close = () => { document.removeEventListener("keydown", onKey); overlay.remove(); };
+			document.addEventListener("keydown", onKey);
 			overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(); });
 
 			const paint = (data) => {
 				const first = Array.isArray(data.providers) && data.providers.length > 0 ? data.providers[0].id : null;
 				const current = modal.dataset.dbcProv ?? first;
 				modal.innerHTML = renderModal(data, current);
+				mountCalendar(modal.querySelector(".dbc-cal"), data.daily?.perDay, modal.dataset.dbcCal);
 				const provSel = modal.querySelector("#dbc-prov");
 				if (provSel !== null) {
 					provSel.value = String(current);
@@ -366,19 +391,23 @@ window.__ModuleLoader__.load({
 			card.addEventListener("click", openModal);
 
 			const valueEl = card.querySelector(".dbc-value");
-				// 模型切换即时刷新：body 级观察 aria-label 变化（不随按钮重建丢失），防抖 300ms。
+				// 供应商变化才刷新：aria-label 观察器（防抖 300ms）+ 5 秒兜底轮询共用同一个
+				// fiber 对比；观察器会被无关的 title/aria-label 变更高频触发，但只在
+				// provider 真正变化时才 fetch。
+				let lastProvider = readCurrentProviderSafe();
+				const refreshIfProviderChanged = () => {
+					const cur = readCurrentProviderSafe();
+					if (cur === lastProvider) return;
+					lastProvider = cur;
+					refreshValue();
+				};
 				let modelDebounce = null;
 				const modelObs = new MutationObserver(() => {
 					if (modelDebounce !== null) return;
-					modelDebounce = setTimeout(() => { modelDebounce = null; refreshValue(); }, 300);
+					modelDebounce = setTimeout(() => { modelDebounce = null; refreshIfProviderChanged(); }, 300);
 				});
 				try { modelObs.observe(document.body, { attributes: true, attributeFilter: ["aria-label", "title"], subtree: true }); } catch { }
-				// 兜底轮询：每 5 秒检测 provider 是否变化（只读 fiber，变了才刷新）。
-				let lastProvider = readCurrentProviderSafe();
-				setInterval(() => {
-					const cur = readCurrentProviderSafe();
-					if (cur !== lastProvider) { lastProvider = cur; refreshValue(); }
-				}, 5000);
+				const providerPoll = setInterval(refreshIfProviderChanged, 5000);
 			let disposed = false;
 
 			const labelEl = card.querySelector(".dbc-label");
@@ -456,6 +485,8 @@ window.__ModuleLoader__.load({
 			return () => {
 				disposed = true;
 				clearInterval(timer);
+				clearInterval(providerPoll);
+				modelObs.disconnect();
 				waitObserver.disconnect();
 				rootObserver.disconnect();
 				card.remove();
