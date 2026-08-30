@@ -54,8 +54,10 @@ DeepSeek Harness（DSH）轻量桌面套件：**约 1MB 的 WebView2 桌面壳**
 ```powershell
 cd launcher
 .\get-webview2.ps1   # 从 NuGet 拉取 WebView2 控件（约 1MB，仅首次）
-.\build.ps1          # 编译 exe + 生成图标 + 创建桌面快捷方式
+.\build.ps1          # 编译 exe + 生成图标 + 部署到 ~\dsh-desktop + 创建桌面快捷方式
 ```
+
+`build.ps1` 会把产物（exe、图标、WebView2 控件）部署到 `%USERPROFILE%\dsh-desktop`，桌面快捷方式与 `install.ps1` 的重启逻辑都指向该目录；仓库内缺 WebView2 控件时会自动从部署目录回补。
 
 ## 配置
 
@@ -67,17 +69,18 @@ cd launcher
 ```
 - `lowBalance`：任一供应商余额 ≤ 此值时触发低余额告警
 - `dailyBudget`：当日预估费用 ≥ 此值时触发超预算告警
-- 每条告警每天最多触发一次
+- 每条告警每天最多触发一次（触发记录写入自动生成的 `~/.dsh/balance-alert-ledger.json`，可随时删除）
 
 **`~/.dsh/balance-offsets.json`** — 手动额度修正（供应商 API 查不到的余额，如代金券）
 ```json
 { "siliconflow": 15.03, "token-rhythm": 67.81 }
 ```
-余额会加上这里的偏移值（用于无公开余额接口的供应商或有代金券的账户）。
+余额会加上这里的偏移值（用于无公开余额接口的供应商或有代金券的账户）。硅基流动已于 2026-08-14 下线 `/user/info` 查询接口（[官方公告](https://docs.siliconflow.cn/cn/release-notes/overview)），替代接口上线前需在此手动维护余额。
 
-**`~/.dsh/.credentials.yaml`** — API Key（查询余额需要）
+**`~/.dsh/.credentials.yaml`** — API Key（查询余额需要；dsh 把键登记在 `refs:` 小节下，顶格写也能识别）
 ```yaml
-DEEPSEEK_API_KEY: sk-xxx
+refs:
+  DEEPSEEK_API_KEY: sk-xxx
 ```
 
 ## 定价维护
