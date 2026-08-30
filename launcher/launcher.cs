@@ -309,13 +309,18 @@ internal static class Program
                 using (var bmp = new Bitmap(png))
                 using (var small = new Bitmap(bmp, 32, 32))
                 {
-                    return Icon.FromHandle(small.GetHicon());
+                    IntPtr hicon = small.GetHicon();
+                    try { return Icon.FromHandle(hicon).Clone() as Icon; }
+                    finally { DestroyIcon(hicon); }
                 }
             }
         }
         catch { }
         return SystemIcons.Application;
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     private static void Fail(string message)
     {
