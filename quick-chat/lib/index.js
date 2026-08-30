@@ -7,7 +7,8 @@
  *
  * create() is idempotent (reuses the record for the same canonical path),
  * and the registry may still be initializing when this bundle applies, so
- * provisioning runs through a small retry loop instead of a hard failure.
+ * provisioning runs through a retry loop: 30 fast attempts, then a slow
+ * 30s cadence forever instead of giving up.
  */
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -18,10 +19,12 @@ export const inject = ['workspaceRegistry']
 
 const CHAT_DIR = join(homedir(), 'DeepSeek-Chats')
 const CHAT_TITLE = 'chat'
-const MAX_ATTEMPTS = 30
+const MAX_FAST_ATTEMPTS = 30
+const SLOW_RETRY_MS = 30 * 1000
 
 export function apply(ctx) {
 	let attempts = 0
+	let warnedSlow = false
 	let ensureTimer = null
 	const ensure = async () => {
 		try {
@@ -29,14 +32,18 @@ export function apply(ctx) {
 			const workspace = await ctx.workspaceRegistry.create(CHAT_DIR, CHAT_TITLE)
 			try { ctx.logger?.info?.(`quick-chat: chat workspace ready (${workspace.id})`) } catch { }
 		} catch (error) {
-			if (attempts++ < MAX_ATTEMPTS) {
-			ensureTimer = setTimeout(ensure, 1000)
+			if (attempts < MAX_FAST_ATTEMPTS) {
+				attempts += 1
+				ensureTimer = setTimeout(ensure, 1000)
 				return
 			}
-			try { ctx.logger?.warn?.(`quick-chat: gave up provisioning chat workspace: ${error}`) } catch { }
+			if (warnedSlow !== true) {
+				warnedSlow = true
+				try { ctx.logger?.warn?.(`quick-chat: registry unavailable after ${MAX_FAST_ATTEMPTS}s, retrying every 30s: ${error}`) } catch { }
+			}
+			ensureTimer = setTimeout(ensure, SLOW_RETRY_MS)
 		}
 	}
 	setTimeout(ensure, 500)
 	ctx.on('dispose', () => { if (ensureTimer !== null) clearTimeout(ensureTimer) })
 }
-

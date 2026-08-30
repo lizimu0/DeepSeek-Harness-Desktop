@@ -13,6 +13,11 @@ window.__ModuleLoader__.load({
 			"set or view the goal for a long-running task": "为长任务设置或查看目标",
 			"Switch the permission preset (sandbox mode + approval policy)": "切换权限预设（沙箱模式 + 审批策略）",
 			"Enter or leave plan mode": "进入或退出计划模式",
+			"Full file access without approval prompts.": "完全文件访问，无需审批确认。",
+			"Write inside the workspace and permitted temporary directories; wider retries require approval.": "可写入工作区与允许的临时目录；更大范围的写入需要审批。",
+			"Current sandbox and approval settings do not match a preset.": "当前沙箱与审批设置不匹配任何预设。",
+			"List notes": "列出笔记",
+			"Read the notes files and summarize": "读取笔记文件并汇总",
 		};
 
 		/** Prefix-match translations (long skill blurbs may vary slightly). */
@@ -58,7 +63,14 @@ window.__ModuleLoader__.load({
 				for (const listbox of document.querySelectorAll('[role="listbox"]')) attach(listbox);
 			};
 
-			const bodyObs = new MutationObserver(() => scan());
+			// body 级变更高频，扫描本身要全量 querySelectorAll，防抖 200ms。
+			let scanTimer = null;
+			const scheduleScan = () => {
+				if (scanTimer !== null) return;
+				scanTimer = setTimeout(() => { scanTimer = null; scan(); }, 200);
+			};
+
+			const bodyObs = new MutationObserver(scheduleScan);
 			bodyObs.observe(document.body, { childList: true, subtree: true });
 			scan();
 		}
