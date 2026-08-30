@@ -66,7 +66,8 @@ function credentialsMap() {
 	const map = {}
 	try {
 		const text = readFileSync(join(homedir(), '.dsh', '.credentials.yaml'), 'utf8')
-		for (const m of text.matchAll(/^([A-Z0-9_]+):\s*(\S+)\s*$/gm)) map[m[1]] = m[2]
+		// 键可能顶格，也可能嵌套在小节下（dsh 实际把 API key 登记在 refs: 之下）
+		for (const m of text.matchAll(/^\s*([A-Z0-9_]+):\s*(\S+)\s*$/gm)) map[m[1]] = m[2].replace(/^["']|["']$/g, '')
 	} catch { }
 	return map
 }
@@ -126,7 +127,15 @@ async function fetchProviderBalance(p, key) {
 		return { kind: 'balance', currency: info.currency ?? 'CNY', available: Number(info.total_balance), charged: Number(info.topped_up_balance), granted: Number(info.granted_balance) }
 	}
 	if (/siliconflow/i.test(p.baseURL)) {
-		const body = await getJson(p.baseURL.replace(/\/$/, '') + '/user/info')
+		// 硅基流动已于 2026-08-14 下线 /user/info，账户级替代接口尚未开放（官方公告），
+		// 410 视作不支持余额查询，让 balance-offsets.json 的手动修正生效
+		let body
+		try {
+			body = await getJson(p.baseURL.replace(/\/$/, '') + '/user/info')
+		} catch (error) {
+			if (String(error?.message ?? error) === 'http-410') throw new Error('unsupported-balance-endpoint')
+			throw error
+		}
 		const d = body?.data
 		if (d === void 0) throw new Error('no-user-info')
 		return { kind: 'balance', currency: 'CNY', available: Number(d.totalBalance), charged: Number(d.chargeBalance), granted: Number(d.freeBalance ?? 0) }
@@ -157,6 +166,7 @@ const providersCache = new Map()
 /** Balance snapshot for every configured provider (5 min TTL, per-provider). */
 async function providersOverview(force) {
 	const creds = credentialsMap()
+	const offsets = balanceOffsets()
 	const list = [
 		{ id: 'deepseek-official', displayName: 'DeepSeek 官方', apiKeyEnv: 'DEEPSEEK_API_KEY', baseURL: 'https://api.deepseek.com' },
 		...configuredProviders(),
@@ -175,7 +185,7 @@ async function providersOverview(force) {
 			try { data = await fetchProviderBalance(p, key) }
 			catch (error) { data = { error: String(error?.message ?? error) } }
 		}
-			const offset = balanceOffsets()[p.id]
+			const offset = offsets[p.id]
 			if (typeof offset === 'number') {
 				if (data.error === void 0 && typeof data.available === 'number') {
 					data = { ...data, available: data.available + offset, granted: (Number.isFinite(data.granted) ? data.granted : 0) + offset }
@@ -187,7 +197,9 @@ async function providersOverview(force) {
 		return { id: p.id, displayName: p.displayName, ...data }
 	}))
 }
-/** dsh appends one small zstd frame per event; split frames by magic and inflate each. */
+/** dsh appends one small zstd frame per event; split frames by magic and inflate each.
+ *  A magic sequence can also occur inside compressed payload — on a failed split we
+ *  merge forward through the following candidate boundaries until one inflates. */
 function decompressFrames(buf) {
 	const magic = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 	const offsets = []
@@ -195,10 +207,26 @@ function decompressFrames(buf) {
 	while ((at = buf.indexOf(magic, at + 1)) !== -1) offsets.push(at)
 	offsets.push(buf.length)
 	const parts = []
-	for (let k = 0; k < offsets.length - 1; k++) {
-		try {
-			parts.push(zlib.zstdDecompressSync(buf.subarray(offsets[k], offsets[k + 1])).toString('utf8'))
-		} catch { /* skip a torn frame */ }
+	let start = 0
+	let k = 1
+	while (k < offsets.length) {
+		let inflated = null
+		let end = k
+		for (; end < offsets.length; end++) {
+			try {
+				inflated = zlib.zstdDecompressSync(buf.subarray(offsets[start], offsets[end])).toString('utf8')
+				break
+			} catch { }
+		}
+		if (inflated !== null) {
+			parts.push(inflated)
+			start = end
+			k = end + 1
+		} else {
+			// unrecoverable from here: drop the torn frame, resync at the next magic
+			start = k
+			k += 1
+		}
 	}
 	return parts.join('\n')
 }
@@ -256,6 +284,7 @@ function fileDailyStats(file) {
 /** Iterate every folded step across all session logs (fresh or cached). */
 function* allSteps() {
 	const root = join(homedir(), '.dsh', 'sessions')
+	const seen = new Set()
 	for (const ws of readdirSync(root, { withFileTypes: true })) {
 		if (!ws.isDirectory()) continue
 		const wsPath = join(root, ws.name)
@@ -263,9 +292,12 @@ function* allSteps() {
 			if (!sess.isDirectory() || !sess.name.startsWith('session-')) continue
 			const file = join(wsPath, sess.name, 'session.jsonl.zstd')
 			if (!existsSync(file)) continue
+			seen.add(file)
 			try { yield* fileDailyStats(file).steps.values() } catch { /* unreadable session */ }
 		}
 	}
+	// drop cache entries for sessions that no longer exist on disk
+	for (const file of dailyFileCache.keys()) if (!seen.has(file)) dailyFileCache.delete(file)
 }
 
 /** Aggregate steps into global + per-provider + per-model views with model-priced costs. */
@@ -325,41 +357,56 @@ function dailySummary() {
 		ok: rootOk,
 	}
 }
-/** Sum tokenUsage totals across every cached session, keeping a per-session breakdown. */
+/** Sum tokenUsage totals across every cached session, keeping a per-session breakdown.
+ *  The projection cache is re-read only when its size/mtime changes. */
+const projCacheEntry = { size: -1, mtime: -1, data: null }
+
 function usageTotals() {
+	const file = join(homedir(), '.dsh', 'storages', 'session_projcache.json')
+	try {
+		const st = statSync(file)
+		if (projCacheEntry.data !== null && projCacheEntry.size === st.size && projCacheEntry.mtime === st.mtimeMs) return projCacheEntry.data
+		const data = readUsageTotals(file)
+		projCacheEntry.size = st.size
+		projCacheEntry.mtime = st.mtimeMs
+		projCacheEntry.data = data
+		return data
+	} catch {
+		return { totals: { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 }, breakdown: [], sessionCount: 0, turns: 0, error: 'projcache-unavailable' }
+	}
+}
+
+/** Parse the projection cache file into totals + per-session breakdown. */
+function readUsageTotals(file) {
 	const totals = { uncachedInputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 }
 	const breakdown = []
 	let turns = 0
-	try {
-		const cache = JSON.parse(readFileSync(join(homedir(), '.dsh', 'storages', 'session_projcache.json'), 'utf8'))
-		const table = cache?.tables?.sessions ?? {}
-		for (const [id, session] of Object.entries(table)) {
-			const rows = session?.rows ?? {}
-			const usage = rows.tokenUsage?.val?.totals
-			const item = { id, title: '', uncachedInputTokens: 0, cacheReadTokens: 0, outputTokens: 0, turns: 0, lastPromptAt: null }
-			const rawTitle = rows.title?.val
-			if (typeof rawTitle === 'string' && rawTitle.trim() !== '') {
-				item.title = rawTitle.trim()
-			} else {
-				const cwd = session?.identity?.cwd
-				item.title = typeof cwd === 'string' && cwd !== '' ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? '未命名') : '未命名'
-			}
-			if (usage !== void 0 && usage !== null) {
-				item.uncachedInputTokens = Number(usage.uncachedInputTokens ?? 0)
-				item.cacheReadTokens = Number(usage.cacheReadTokens ?? 0)
-				item.outputTokens = Number(usage.outputTokens ?? 0)
-				totals.uncachedInputTokens += item.uncachedInputTokens
-				totals.cacheReadTokens += item.cacheReadTokens
-				totals.cacheWriteTokens += Number(usage.cacheWriteTokens ?? 0)
-				totals.outputTokens += item.outputTokens
-			}
-			item.turns = Number(rows.sessionStats?.val?.turns ?? 0)
-			turns += item.turns
-			item.lastPromptAt = rows.sessionListMetadata?.val?.lastPromptAt ?? null
-			breakdown.push(item)
+	const cache = JSON.parse(readFileSync(file, 'utf8'))
+	const table = cache?.tables?.sessions ?? {}
+	for (const [id, session] of Object.entries(table)) {
+		const rows = session?.rows ?? {}
+		const usage = rows.tokenUsage?.val?.totals
+		const item = { id, title: '', uncachedInputTokens: 0, cacheReadTokens: 0, outputTokens: 0, turns: 0, lastPromptAt: null }
+		const rawTitle = rows.title?.val
+		if (typeof rawTitle === 'string' && rawTitle.trim() !== '') {
+			item.title = rawTitle.trim()
+		} else {
+			const cwd = session?.identity?.cwd
+			item.title = typeof cwd === 'string' && cwd !== '' ? (cwd.split(/[\\/]/).filter(Boolean).pop() ?? '未命名') : '未命名'
 		}
-	} catch {
-		return { totals, breakdown, sessionCount: 0, turns: 0, error: 'projcache-unavailable' }
+		if (usage !== void 0 && usage !== null) {
+			item.uncachedInputTokens = Number(usage.uncachedInputTokens ?? 0)
+			item.cacheReadTokens = Number(usage.cacheReadTokens ?? 0)
+			item.outputTokens = Number(usage.outputTokens ?? 0)
+			totals.uncachedInputTokens += item.uncachedInputTokens
+			totals.cacheReadTokens += item.cacheReadTokens
+			totals.cacheWriteTokens += Number(usage.cacheWriteTokens ?? 0)
+			totals.outputTokens += item.outputTokens
+		}
+		item.turns = Number(rows.sessionStats?.val?.turns ?? 0)
+		turns += item.turns
+		item.lastPromptAt = rows.sessionListMetadata?.val?.lastPromptAt ?? null
+		breakdown.push(item)
 	}
 	return { totals, breakdown, sessionCount: breakdown.length, turns }
 }
