@@ -5,20 +5,21 @@ param([switch]$Uninstall)
 
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
-$profile = Join-Path $env:USERPROFILE '.dsh\profiles\web'
+# 注意：不要用 $profile 这个名字——它是 PowerShell 的自动变量
+$profileDir = Join-Path $env:USERPROFILE '.dsh\profiles\web'
 $plugins = @(
     @{ dir = Join-Path $repo 'plugin';      name = 'dsh-balance-card' },
     @{ dir = Join-Path $repo 'quick-chat';  name = 'dsh-quick-chat' },
     @{ dir = Join-Path $repo 'commands-zh'; name = 'dsh-commands-zh' }
 )
 
-if (-not (Test-Path (Join-Path $profile 'package.json'))) {
-    Write-Error "web profile 不存在: $profile（请先运行一次 dsh web 让其初始化）"
+if (-not (Test-Path (Join-Path $profileDir 'package.json'))) {
+    Write-Error "web profile 不存在: $profileDir（请先运行一次 dsh web 让其初始化）"
 }
 
 # --- 1. junction 链接 ---
 foreach ($p in $plugins) {
-    $link = Join-Path $profile "node_modules\$($p.name)"
+    $link = Join-Path $profileDir "node_modules\$($p.name)"
     if (Test-Path $link) { (Get-Item $link).Delete() }
     if (-not $Uninstall) {
         New-Item -ItemType Junction -Path $link -Target $p.dir | Out-Null
@@ -27,8 +28,14 @@ foreach ($p in $plugins) {
 }
 
 # --- 2. package.json 登记 ---
-$pkgf = Join-Path $profile 'package.json'
-$j = Get-Content $pkgf -Raw | ConvertFrom-Json
+$pkgf = Join-Path $profileDir 'package.json'
+# 显式 UTF8：Windows PowerShell 5.1 下无 BOM 的 UTF-8 文件默认按 ANSI 解码，中文路径会变成乱码
+$j = Get-Content $pkgf -Raw -Encoding UTF8 | ConvertFrom-Json
+# 登记锚点在全新 profile 上可能缺失，逐一补齐
+if (-not $j.PSObject.Properties['dependencies']) { $j | Add-Member -NotePropertyName 'dependencies' -NotePropertyValue ([pscustomobject]@{}) }
+if (-not $j.PSObject.Properties['dsh']) { $j | Add-Member -NotePropertyName 'dsh' -NotePropertyValue ([pscustomobject]@{}) }
+if (-not $j.dsh.PSObject.Properties['profile']) { $j.dsh | Add-Member -NotePropertyName 'profile' -NotePropertyValue ([pscustomobject]@{}) }
+if (-not $j.dsh.profile.PSObject.Properties['bundles']) { $j.dsh.profile | Add-Member -NotePropertyName 'bundles' -NotePropertyValue @() }
 foreach ($p in $plugins) {
     $depName = $p.name
     if ($Uninstall) {
@@ -43,7 +50,9 @@ foreach ($p in $plugins) {
         Write-Host "registered $depName"
     }
 }
-$j | ConvertTo-Json -Depth 10 | Set-Content $pkgf -Encoding UTF8
+# 无 BOM 写回（PS5.1 的 Set-Content -Encoding UTF8 会加 BOM，Node 的 JSON.parse 不接受）
+$json = $j | ConvertTo-Json -Depth 10
+[System.IO.File]::WriteAllText($pkgf, $json + "`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
 if ($Uninstall) { Write-Host '已卸载。请重启 dsh web 生效。'; exit 0 }
 
@@ -59,9 +68,13 @@ if (Test-Path $launcher) {
     Start-Process $launcher
     Write-Host 'launcher started（托盘常驻，窗口将自动打开）'
 } else {
-    # 无启动器：直接后台拉起 node
-    $dshBin = Get-ChildItem "$env:LOCALAPPDATA\npm-cache\_npx\*\node_modules\@deepseek-ai\dsh\lib\bin.js" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    # 无启动器：直接后台拉起 node。全局安装优先（与 launcher 查找顺序一致），其次 npx 运行缓存
+    $dshBin = Get-ChildItem "$env:APPDATA\npm\node_modules\@deepseek-ai\dsh\lib\bin.js" -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $dshBin) {
+        $dshBin = Get-ChildItem "$env:LOCALAPPDATA\npm-cache\_npx\*\node_modules\@deepseek-ai\dsh\lib\bin.js" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    }
     if ($dshBin) {
         Start-Process node -ArgumentList "`"$($dshBin.FullName)`" web --port 3080" -WindowStyle Hidden
         Write-Host 'dsh web started in background (http://127.0.0.1:3080)'
