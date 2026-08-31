@@ -143,6 +143,66 @@ internal static class Program
             };
             alertTimer.Start();
 
+            // Health monitor: dsh web dying while the launcher lives (crash, OOM,
+            // external kill) used to leave a dead tray until the user reopened the
+            // window. Poll every 60s and restart in the background — a visible
+            // window reloads itself afterwards. Safe against double starts: the
+            // probe runs under OpenLock (shared with the starter thread) and only
+            // one restarter may be in flight, so a concurrently starting server is
+            // detected before a second one is launched.
+            var healthTimer = new System.Windows.Forms.Timer();
+            healthTimer.Interval = 120 * 1000; // grace for a slow cold start; later ticks at 60s
+            bool restartNotified = false;
+            int restartInFlight = 0;
+            healthTimer.Tick += (s2, e2) =>
+            {
+                healthTimer.Interval = 60 * 1000;
+                if (Probe(2000)) { restartNotified = false; return; }
+                if (System.Threading.Interlocked.CompareExchange(ref restartInFlight, 1, 0) != 0) return;
+                var restarter = new Thread(() =>
+                {
+                    try
+                    {
+                        bool failed = false;
+                        lock (OpenLock)
+                        {
+                            if (!Probe(1500))
+                            {
+                                string bin = FindDshBin();
+                                string node = FindNode();
+                                if (bin == null || node == null) failed = true;
+                                else
+                                {
+                                    StartServer(node, bin);
+                                    if (WaitReady(TimeSpan.FromSeconds(120)))
+                                    {
+                                        restartNotified = false;
+                                        if (Form != null) Form.BeginInvoke(new Action(() => Form.ReloadIfVisible()));
+                                    }
+                                    else failed = true;
+                                }
+                            }
+                        }
+                        if (failed && !restartNotified)
+                        {
+                            restartNotified = true;
+                            try
+                            {
+                                Form.BeginInvoke(new Action(() =>
+                                {
+                                    try { Tray.ShowBalloonTip(8000, "DeepSeek Harness", "dsh web 意外停止，自动重启失败；每分钟重试。日志：" + LogPath(), ToolTipIcon.Error); } catch { }
+                                }));
+                            }
+                            catch { }
+                        }
+                    }
+                    finally { System.Threading.Interlocked.Exchange(ref restartInFlight, 0); }
+                });
+                restarter.IsBackground = true;
+                restarter.Start();
+            };
+            healthTimer.Start();
+
             var starter = new Thread(EnsureServerAndShow);
             starter.IsBackground = true;
             starter.Start();
@@ -552,6 +612,18 @@ internal class MainForm : Form
         Show();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Activate();
+    }
+
+    /** Reload the webview after a background server restart — only when the
+     *  window is on screen; a hidden window re-navigates on next open anyway. */
+    public void ReloadIfVisible()
+    {
+        try
+        {
+            if (!Visible) return;
+            if (_web != null && _web.CoreWebView2 != null) _web.CoreWebView2.Reload();
+        }
+        catch { }
     }
 
     public void EnsureNavigated()
