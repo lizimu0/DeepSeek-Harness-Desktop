@@ -36,12 +36,18 @@ DeepSeek Harness（DSH）轻量桌面套件：**约 1MB 的 WebView2 桌面壳**
 
 把 dsh web 命令菜单（`+` 号弹出）里的英文命令描述替换成中文（精确匹配 + 前缀匹配两套规则）。
 
+### follow-model/ — dsh-subagent-follow-model 插件
+
+让子代理跟随当前选择的模型：子代理发起请求时改用**父会话当前正在使用的模型路由**（父会话最新一次请求的 provider/model），父代理不在（如后台子代理被单独唤醒）时回退到全局当前默认模型。
+
+背景：dsh 原生行为是子代理继承父代理创建时种子化的 `AgentOptions` 路由——主会话中途切换模型后，子代理仍然用旧供应商的额度。本插件在 `agent/request` 瀑布外层改写子代理路由，语义与主会话一致（切换在下一步生效）。若想用 tool-subagent 配置里的静态 `agentOptions` 固定子代理模型，卸载本插件即可。
+
 ## 一键安装
 
 把整个仓库放到任意稳定位置，运行：
 
 ```powershell
-.\install.ps1             # 安装/更新三个插件 + 重启 dsh web
+.\install.ps1             # 安装/更新四个插件 + 重启 dsh web
 .\install.ps1 -Uninstall  # 卸载
 ```
 

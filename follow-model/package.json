@@ -1,0 +1,21 @@
+{
+  "name": "dsh-subagent-follow-model",
+  "description": "Repoints subagent children to the model their parent session currently runs on, so delegated work bills the provider you selected instead of the stale creation-time route.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/**/*.js",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT"
+}

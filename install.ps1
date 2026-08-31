@@ -8,9 +8,10 @@ $repo = $PSScriptRoot
 # 注意：不要用 $profile 这个名字——它是 PowerShell 的自动变量
 $profileDir = Join-Path $env:USERPROFILE '.dsh\profiles\web'
 $plugins = @(
-    @{ dir = Join-Path $repo 'plugin';      name = 'dsh-balance-card' },
-    @{ dir = Join-Path $repo 'quick-chat';  name = 'dsh-quick-chat' },
-    @{ dir = Join-Path $repo 'commands-zh'; name = 'dsh-commands-zh' }
+    @{ dir = Join-Path $repo 'plugin';       name = 'dsh-balance-card' },
+    @{ dir = Join-Path $repo 'quick-chat';   name = 'dsh-quick-chat' },
+    @{ dir = Join-Path $repo 'commands-zh';  name = 'dsh-commands-zh' },
+    @{ dir = Join-Path $repo 'follow-model'; name = 'dsh-subagent-follow-model' }
 )
 
 if (-not (Test-Path (Join-Path $profileDir 'package.json'))) {
