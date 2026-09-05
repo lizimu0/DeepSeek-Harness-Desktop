@@ -60,9 +60,15 @@ if ($Uninstall) { Write-Host '已卸载。请重启 dsh web 生效。'; exit 0 }
 # --- 3. 重启 dsh web ---
 $conn = Get-NetTCPConnection -LocalPort 3080 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($conn) {
-    Stop-Process -Id $conn.OwningProcess -Force
-    Start-Sleep -Seconds 2
-    Write-Host 'stopped old dsh web'
+    # 仅当占用者是 node(dsh web) 才杀,防止误杀恰好占用 3080 的无关进程
+    $owner = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+    if ($owner -and $owner.ProcessName -eq 'node') {
+        Stop-Process -Id $conn.OwningProcess -Force
+        Start-Sleep -Seconds 2
+        Write-Host 'stopped old dsh web'
+    } else {
+        Write-Host ("port 3080 is occupied by '{0}' (pid {1}), not killing" -f ($owner.ProcessName ?? 'unknown'), $conn.OwningProcess)
+    }
 }
 $launcher = Join-Path $env:USERPROFILE 'dsh-desktop\dsh-desktop.exe'
 if (Test-Path $launcher) {

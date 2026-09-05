@@ -11,7 +11,7 @@ using Microsoft.Web.WebView2.WinForms;
 
 internal static class Program
 {
-    private const int Port = 3080;
+    internal const int Port = 3080;
     public static readonly string Url = "http://127.0.0.1:" + Port;
     public static NotifyIcon Tray;
     public static MainForm Form;
@@ -249,12 +249,7 @@ internal static class Program
 
     public static void QuitAll()
     {
-        try
-        {
-            int pid = FindPidByPort(Port);
-            if (pid > 0) Process.GetProcessById(pid).Kill();
-        }
-        catch { }
+        // 只终止本进程启动的 server;按端口查杀会误杀恰好占用 3080 的无关进程
         try
         {
             if (ServerCmd != null && !ServerCmd.HasExited) ServerCmd.Kill();
@@ -306,12 +301,31 @@ internal static class Program
             }
         }
         catch { }
-        var args = "/c \"\"" + node + "\" \"" + bin + "\" web --port " + Port + " >> \"" + log + "\" 2>&1\"";
-        var psi = new ProcessStartInfo("cmd.exe", args);
+        // 直接以 node 启动,不再经过 cmd.exe /c 字符串拼接(消除命令注入面),
+        // 日志重定向改为自管:stdout/stderr 异步追加到同一文件
+        var psi = new ProcessStartInfo(node, "\"" + bin + "\" web --port " + Port);
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;
         psi.WorkingDirectory = Path.GetDirectoryName(bin);
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
+        psi.StandardOutputEncoding = System.Text.Encoding.UTF8;
+        psi.StandardErrorEncoding = System.Text.Encoding.UTF8;
         ServerCmd = Process.Start(psi);
+        var sync = new object();
+        Action<string> appendLog = line =>
+        {
+            if (line == null) return;
+            try
+            {
+                lock (sync) File.AppendAllText(log, "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line + Environment.NewLine);
+            }
+            catch { }
+        };
+        ServerCmd.OutputDataReceived += (s, e) => appendLog(e.Data);
+        ServerCmd.ErrorDataReceived += (s, e) => appendLog(e.Data);
+        ServerCmd.BeginOutputReadLine();
+        ServerCmd.BeginErrorReadLine();
     }
 
     private static bool WaitReady(TimeSpan timeout)
@@ -439,33 +453,8 @@ internal static class Program
     [DllImport("iphlpapi.dll", SetLastError = true)]
     private static extern uint GetExtendedTcpTable(IntPtr pTcpTable, ref int pdwSize, bool bOrder, int ulAf, int TableClass, uint Reserved);
 
-    private static int FindPidByPort(int port)
-    {
-        int size = 0;
-        GetExtendedTcpTable(IntPtr.Zero, ref size, true, 2, 5, 0);
-        if (size <= 0) return 0;
-        IntPtr buf = Marshal.AllocHGlobal(size);
-        try
-        {
-            if (GetExtendedTcpTable(buf, ref size, true, 2, 5, 0) != 0) return 0;
-            int rows = Marshal.ReadInt32(buf);
-            IntPtr p = new IntPtr(buf.ToInt64() + 4);
-            for (int i = 0; i < rows; i++)
-            {
-                uint state = (uint)Marshal.ReadInt32(p);
-                uint portRaw = (uint)Marshal.ReadInt32(new IntPtr(p.ToInt64() + 8));
-                int localPort = (int)(((portRaw & 0xFF00) >> 8) | ((portRaw & 0xFF) << 8));
-                int pid = Marshal.ReadInt32(new IntPtr(p.ToInt64() + 20));
-                if (state == 2 && localPort == port) return pid;
-                p = new IntPtr(p.ToInt64() + 24);
-            }
-            return 0;
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buf);
-        }
-    }
+    // FindPidByPort 已移除:按端口查杀进程会误杀恰好占用 3080 的无关进程,
+    // 退出时只应终止本启动器自己拉起的 ServerCmd。
 
     public static Icon LoadIcon()
     {
@@ -530,8 +519,49 @@ internal class MainForm : Form
         {
             try
             {
-                if (e.IsSuccess) _web.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(
-                    "(function(){function chk(){var ok=false;try{for(var i=0;i<document.body.children.length;i++){var n=document.body.children[i];if(n.tagName!=='SCRIPT'&&n.tagName!=='STYLE'&&n.getBoundingClientRect().height>50){ok=true;break}}}catch(x){}if(ok){try{window.chrome.webview.postMessage('dsh-ui-ready')}catch(x){}}else{setTimeout(chk,100)}}chk()})();");
+                if (e.IsSuccess)
+                {
+                    var core = _web.CoreWebView2;
+                    // 导航白名单:窗口承载 LLM 输出,页面内链接可能被提示注入到钓鱼站,
+                    // 仅放行本机 dsh web 与本地产生的 about/data;其余 http(s) 转交系统浏览器
+                    core.NavigationStarting += (s2, e2) =>
+                    {
+                        try
+                        {
+                            var uri = new Uri(e2.Uri);
+                            bool local = uri.Scheme == "http"
+                                && string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                                && uri.Port == Program.Port;
+                            bool localScheme = uri.Scheme == "about" || uri.Scheme == "data";
+                            if (!local && !localScheme)
+                            {
+                                if (uri.Scheme == "http" || uri.Scheme == "https")
+                                {
+                                    try { Process.Start(new ProcessStartInfo(e2.Uri) { UseShellExecute = true }); }
+                                    catch { }
+                                }
+                                e2.Cancel = true;
+                            }
+                        }
+                        catch
+                        {
+                            e2.Cancel = true;
+                        }
+                    };
+                    // target=_blank / window.open 统一转系统浏览器,避免弹出窗口绕过白名单
+                    core.NewWindowRequested += (s2, e2) =>
+                    {
+                        try { Process.Start(new ProcessStartInfo(e2.Uri) { UseShellExecute = true }); }
+                        catch { }
+                        e2.Handled = true;
+                    };
+#if !DEBUG
+                    // 发布版关闭 DevTools,减少暴露面(调试构建保留)
+                    core.Settings.AreDevToolsEnabled = false;
+#endif
+                    core.AddScriptToExecuteOnDocumentCreatedAsync(
+                        "(function(){function chk(){var ok=false;try{for(var i=0;i<document.body.children.length;i++){var n=document.body.children[i];if(n.tagName!=='SCRIPT'&&n.tagName!=='STYLE'&&n.getBoundingClientRect().height>50){ok=true;break}}}catch(x){}if(ok){try{window.chrome.webview.postMessage('dsh-ui-ready')}catch(x){}}else{setTimeout(chk,100)}}chk()})();");
+                }
             }
             catch { }
         };

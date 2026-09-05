@@ -231,7 +231,7 @@ window.__ModuleLoader__.load({
 				${modelsHtml}
 				${calendarHtml}
 				<h3>费用估算${data.cost?.peak === true ? " · 高峰价" : ""}</h3>${costHtml}
-				<div class="dbc-note">费用按各模型官方定价分别估算（${data.cost?.deckLabel ?? "--"}）；用量为本地会话统计并按所选供应商过滤。</div>
+				<div class="dbc-note">费用按各模型官方定价分别估算（${esc(String(data.cost?.deckLabel ?? "--"))}）；用量为本地会话统计并按所选供应商过滤。</div>
 				<button class="dbc-refresh" type="button">刷新余额</button>
 			`;
 		}
@@ -269,7 +269,7 @@ window.__ModuleLoader__.load({
 					const a = v === 0 ? 0 : 0.15 + 0.85 * Math.sqrt(v / maxAll);
 					const bg = v === 0 ? "" : ` style="background:rgba(59,130,246,${a.toFixed(2)});color:${a > 0.55 ? "#fff" : "inherit"}"`;
 					const today = key === todayKey ? " dbc-today" : "";
-					cells += `<div class="dbc-day${today}"${bg} title="${key} · ${fmtTokens(v)} tok">${day}</div>`;
+					cells += `<div class="dbc-day${today}"${bg} title="${esc(key)} · ${fmtTokens(v)} tok">${day}</div>`;
 				}
 				container.querySelector(".dbc-cal-grid").innerHTML = cells;
 				container.querySelector(".dbc-cal-title").textContent = `${year}年${month + 1}月`;

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -483,13 +483,20 @@ function loadAlertLedger() {
 
 const alertLedger = loadAlertLedger()
 
+/** 原子落盘:先写临时文件再 rename,避免写一半崩溃留下损坏的 JSON。 */
+function writeJsonAtomic(path, data) {
+	const tmp = path + '.tmp'
+	writeFileSync(tmp, data, 'utf8')
+	renameSync(tmp, path)
+}
+
 /** Raise at most one alert per logical key per local day. */
 function raiseAlert(key, message) {
 	const fullKey = `${localDateKey(Date.now())}:${key}`
 	if (alertLedger.has(fullKey)) return
 	alertLedger.set(fullKey, { key: fullKey, message, at: Date.now() })
 	try {
-		writeFileSync(ALERT_LEDGER_PATH, JSON.stringify(Object.fromEntries(alertLedger)), 'utf8')
+		writeJsonAtomic(ALERT_LEDGER_PATH, JSON.stringify(Object.fromEntries(alertLedger)))
 	} catch { }
 }
 
@@ -518,7 +525,7 @@ async function collectAlerts() {
 	}
 	if (pruned) {
 		try {
-			writeFileSync(ALERT_LEDGER_PATH, JSON.stringify(Object.fromEntries(alertLedger)), 'utf8')
+			writeJsonAtomic(ALERT_LEDGER_PATH, JSON.stringify(Object.fromEntries(alertLedger)))
 		} catch { }
 	}
 	return [...alertLedger.values()]
