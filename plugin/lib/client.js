@@ -41,7 +41,7 @@ window.__ModuleLoader__.load({
 			.dbc-stat .h{font-size:11px;opacity:.6}
 			.dbc-stat .n{font-size:14px;font-weight:600;margin-top:2px;font-variant-numeric:tabular-nums}
 			.dbc-stat .c{font-size:11px;opacity:.7;margin-top:2px}
-			.dbc-heat{display:flex;flex-wrap:wrap;gap:3px;margin-top:8px}
+			.dbc-heat{margin-top:8px}
 			.dbc-account{background:linear-gradient(135deg,rgba(59,130,246,.18),rgba(99,102,241,.10));border:1px solid rgba(59,130,246,.30);border-radius:12px;padding:12px 14px;margin:2px 0 4px}
 			.dbc-account-err{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.08));border:1px solid var(--dsw-alias-border-l1,rgba(128,128,128,.2))}
 			.dbc-badge-off{color:#d97706;background:rgba(217,119,6,.12)}
@@ -72,18 +72,18 @@ window.__ModuleLoader__.load({
 			.dbc-amount{font-size:24px;font-weight:700;margin-top:8px;font-variant-numeric:tabular-nums}
 			.dbc-acct-line{font-size:11px;opacity:.6;margin-top:2px}
 			.dbc-stat .n{font-size:15px}
-			.dbc-cal{margin-top:10px}
-			.dbc-cal-head{display:flex;align-items:center;gap:6px;justify-content:center;margin-bottom:6px}
-			.dbc-cal-title{font-size:12px;min-width:86px;text-align:center}
-			.dbc-cal-nav{border:none;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12));border-radius:6px;cursor:pointer;color:inherit;padding:1px 9px;font-size:13px}
-			.dbc-cal-nav:hover{background:var(--dsw-alias-bg-layer-3,rgba(128,128,128,.22))}
-			.dbc-cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
-			.dbc-wk{font-size:10px;opacity:.5;text-align:center;padding-bottom:2px}
-			.dbc-day{aspect-ratio:1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:10px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.1));cursor:default}
-			.dbc-today{outline:1.5px solid rgba(59,130,246,.85)}
+			/* Codex/GitHub 风格用量热力图：小方块，列为周、行为星期，最多 16 周 */
+			.dbc-heat{margin-top:8px}
+			.dbc-heat-months{display:grid;grid-auto-flow:column;grid-auto-columns:13px;gap:3px;font-size:10px;opacity:.55;height:14px;margin:0 0 2px 19px}
+			.dbc-heat-body{display:flex;gap:3px;align-items:flex-start}
+			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,13px);gap:3px;font-size:9px;opacity:.5;width:16px}
+			.dbc-heat-wk span{display:flex;align-items:center;line-height:1}
+			.dbc-heat-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,13px);grid-auto-columns:13px;gap:3px}
+			.dbc-heat-cell{width:13px;height:13px;border-radius:3px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
+			.dbc-heat-cell.dbc-today{outline:1.5px solid rgba(59,130,246,.85);outline-offset:-1px}
+			.dbc-heat-future{background:transparent}
 			.dbc-legend{display:flex;gap:3px;align-items:center;justify-content:flex-end;font-size:10px;opacity:.75;margin-top:6px}
 			.dbc-legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
-			.dbc-cell{width:13px;height:13px;border-radius:3px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
 			[data-dsh-frame]{column-gap:0 !important}
 			body :has(> [class*="sidebarCol"]){column-gap:0 !important}
 			[class*="splitHandle"]{width:4px !important}
@@ -217,9 +217,12 @@ window.__ModuleLoader__.load({
 				: "";
 
 			const calendarHtml = `<h3>每日用量</h3>
-				<div class="dbc-cal">
-					<div class="dbc-cal-head"><button class="dbc-cal-nav" type="button" data-m="-1">‹</button><div class="dbc-cal-title"></div><button class="dbc-cal-nav" type="button" data-m="1">›</button></div>
-					<div class="dbc-cal-grid"></div>
+				<div class="dbc-heat">
+					<div class="dbc-heat-months"></div>
+					<div class="dbc-heat-body">
+						<div class="dbc-heat-wk"><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span><span></span></div>
+						<div class="dbc-heat-grid"></div>
+					</div>
 					<div class="dbc-legend"><i style="background:rgba(59,130,246,.3)"></i><i style="background:rgba(59,130,246,.6)"></i><i style="background:rgba(59,130,246,.95)"></i><span>少 → 多</span></div>
 				</div>`;
 
@@ -235,51 +238,51 @@ window.__ModuleLoader__.load({
 				<button class="dbc-refresh" type="button">刷新余额</button>
 			`;
 		}
-		function mountCalendar(container, perDay, saved) {
+		/** Codex/GitHub-style heatmap: one column per week (Mon first), one row per
+		 *  weekday. The window spans from the oldest perDay entry up to the current
+		 *  week, capped at 16 weeks; days after today render transparent. */
+		function mountHeatmap(container, perDay) {
 			if (container === null || perDay === void 0) return;
 			const byDay = new Map(perDay.map((x) => [x.date, x.input + x.cacheRead + x.output]));
 			const maxAll = Math.max(1, ...byDay.values());
-			const now = new Date();
-			let year = now.getFullYear();
-			let month = now.getMonth();
-			if (typeof saved === "string") {
-				const savedParts = saved.split("-").map(Number);
-				if (savedParts.length === 2 && Number.isFinite(savedParts[0]) && Number.isFinite(savedParts[1])
-					&& savedParts[0] >= 2000 && savedParts[1] >= 0 && savedParts[1] <= 11) {
-					year = savedParts[0];
-					month = savedParts[1];
+			const pad = (x) => String(x).padStart(2, "0");
+			const kOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+			const today = new Date();
+			const tKey = kOf(today);
+			const monday = new Date(today);
+			monday.setDate(monday.getDate() - (today.getDay() + 6) % 7);
+			// weeks: cover the oldest entry, minimum 4, cap 16 (fits the modal width)
+			let weeks = 4;
+			const oldest = perDay[0]?.date;
+			if (typeof oldest === "string") {
+				const o = new Date(oldest + "T00:00:00");
+				if (!Number.isNaN(o.getTime())) weeks = Math.min(16, Math.max(4, Math.ceil((monday - o) / 6048e5) + 1));
+			}
+			const start = new Date(monday);
+			start.setDate(start.getDate() - (weeks - 1) * 7);
+			let cells = "";
+			let months = "";
+			let lastMonth = -1;
+			for (let w = 0; w < weeks; w++) {
+				const weekStart = new Date(start);
+				weekStart.setDate(start.getDate() + w * 7);
+				if (weekStart.getMonth() !== lastMonth) {
+					lastMonth = weekStart.getMonth();
+					months += `<span style="grid-column:${w + 1}">${weekStart.getMonth() + 1}月</span>`;
+				}
+				for (let i = 0; i < 7; i++) {
+					const day = new Date(weekStart);
+					day.setDate(weekStart.getDate() + i);
+					if (day > today) { cells += '<i class="dbc-heat-cell dbc-heat-future"></i>'; continue; }
+					const v = byDay.get(kOf(day)) ?? 0;
+					const a = v === 0 ? 0 : 0.15 + 0.85 * Math.sqrt(v / maxAll);
+					const bg = v === 0 ? "" : ` style="background:rgba(59,130,246,${a.toFixed(2)})"`;
+					const todayCls = kOf(day) === tKey ? " dbc-today" : "";
+					cells += `<i class="dbc-heat-cell${todayCls}"${bg} title="${esc(kOf(day))} · ${fmtTokens(v)} tok"></i>`;
 				}
 			}
-			// keep the browsed month across repaints (provider switch re-renders the modal)
-			const remember = () => {
-				const host = container.closest(".dbc-modal");
-				if (host !== null) host.setAttribute("data-dbc-cal", `${year}-${month}`);
-			};
-			const todayKey = (() => { const p = (x) => String(x).padStart(2, "0"); return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`; })();
-			const draw = () => {
-				const pad = (x) => String(x).padStart(2, "0");
-				let cells = "";
-				for (const w of ["一", "二", "三", "四", "五", "六", "日"]) cells += `<div class="dbc-wk">${w}</div>`;
-				const lead = (new Date(year, month, 1).getDay() + 6) % 7;
-				for (let i = 0; i < lead; i++) cells += "<div></div>";
-				const days = new Date(year, month + 1, 0).getDate();
-				for (let day = 1; day <= days; day++) {
-					const key = `${year}-${pad(month + 1)}-${pad(day)}`;
-					const v = byDay.get(key) ?? 0;
-					const a = v === 0 ? 0 : 0.15 + 0.85 * Math.sqrt(v / maxAll);
-					const bg = v === 0 ? "" : ` style="background:rgba(59,130,246,${a.toFixed(2)});color:${a > 0.55 ? "#fff" : "inherit"}"`;
-					const today = key === todayKey ? " dbc-today" : "";
-					cells += `<div class="dbc-day${today}"${bg} title="${esc(key)} · ${fmtTokens(v)} tok">${day}</div>`;
-				}
-				container.querySelector(".dbc-cal-grid").innerHTML = cells;
-				container.querySelector(".dbc-cal-title").textContent = `${year}年${month + 1}月`;
-				remember();
-			};
-			const prev = container.querySelector('[data-m="-1"]');
-			const next = container.querySelector('[data-m="1"]');
-			if (prev !== null) prev.addEventListener("click", () => { month -= 1; if (month < 0) { month = 11; year -= 1; } draw(); });
-			if (next !== null) next.addEventListener("click", () => { month += 1; if (month > 11) { month = 0; year += 1; } draw(); });
-			draw();
+			container.querySelector(".dbc-heat-months").innerHTML = months;
+			container.querySelector(".dbc-heat-grid").innerHTML = cells;
 		}
 
 		function openModal() {
@@ -303,7 +306,7 @@ window.__ModuleLoader__.load({
 				const first = Array.isArray(data.providers) && data.providers.length > 0 ? data.providers[0].id : null;
 				const current = modal.dataset.dbcProv ?? first;
 				modal.innerHTML = renderModal(data, current);
-				mountCalendar(modal.querySelector(".dbc-cal"), data.daily?.perDay, modal.dataset.dbcCal);
+				mountHeatmap(modal.querySelector(".dbc-heat"), data.daily?.perDay);
 				const provSel = modal.querySelector("#dbc-prov");
 				if (provSel !== null) {
 					provSel.value = String(current);
