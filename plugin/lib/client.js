@@ -84,7 +84,8 @@ window.__ModuleLoader__.load({
 			.dbc-heat-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,13px);grid-auto-columns:13px;gap:3px}
 			.dbc-heat-cell{width:13px;height:13px;border-radius:3px;border:1px solid transparent;transition:transform .12s,border-color .12s;cursor:default}
 			.dbc-heat-cell:hover{transform:scale(1.18);border-color:var(--dsw-alias-border-l2,rgba(128,128,128,.45));position:relative;z-index:1}
-			.dbc-hl-0{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
+			/* 空白格用固定中性灰：主题的 bg-layer-2 与弹窗背景(layer-3)几乎同色，格子会隐形 */
+			.dbc-hl-0{background:rgba(128,128,128,.16)}
 			.dbc-hl-1{background:rgba(59,130,246,.30)}
 			.dbc-hl-2{background:rgba(59,130,246,.55)}
 			.dbc-hl-3{background:rgba(59,130,246,.80)}
