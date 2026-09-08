@@ -75,8 +75,8 @@ window.__ModuleLoader__.load({
 			/* ZCode 风格 Token 活动热力图：5 档离散色阶、方形格子带边框、悬停放大 */
 			.dbc-usage-heat{margin-top:8px}
 			.dbc-heat-summary{font-size:11px;opacity:.6;margin-bottom:6px}
-			.dbc-heat-months{display:grid;grid-auto-flow:column;grid-auto-columns:13px;gap:3px;font-size:9px;opacity:.55;height:12px;margin:0 0 3px 16px}
-			.dbc-heat-months span{white-space:nowrap}
+			.dbc-heat-months{display:grid;grid-auto-flow:column;grid-auto-columns:13px;gap:3px;font-size:10px;opacity:.6;height:14px;margin:0 0 3px 16px}
+			.dbc-heat-months span{white-space:nowrap;justify-self:start}
 			.dbc-heat-body{display:flex;gap:3px;align-items:flex-start}
 			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,13px);gap:3px;font-size:8px;opacity:.45;width:13px}
 			.dbc-heat-wk span{display:flex;align-items:center;line-height:1}
@@ -276,7 +276,10 @@ window.__ModuleLoader__.load({
 				weekStart.setDate(start.getDate() + w * 7);
 				if (weekStart.getMonth() !== lastMonth) {
 					lastMonth = weekStart.getMonth();
-					months += `<span style="grid-column:${w + 1} / span 2">${weekStart.getMonth() + 1}月</span>`;
+					// GitHub/Codex 式月份刻度：锚定月份起始列、单列宽、文字右溢；
+					// 末列右对齐避免溢出网格右缘
+					const alignEnd = w === weeks - 1 ? ";justify-self:end" : "";
+					months += `<span style="grid-column:${w + 1}${alignEnd}">${weekStart.getMonth() + 1}月</span>`;
 				}
 				for (let i = 0; i < 7; i++) {
 					const day = new Date(weekStart);
