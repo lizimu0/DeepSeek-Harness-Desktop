@@ -75,13 +75,14 @@ window.__ModuleLoader__.load({
 			/* ZCode 风格 Token 活动热力图：5 档离散色阶、方形格子带边框、悬停放大 */
 			.dbc-usage-heat{margin-top:8px}
 			.dbc-heat-summary{font-size:11px;opacity:.6;margin-bottom:6px}
-			.dbc-heat-months{display:grid;gap:3px;font-size:9px;opacity:.55;height:12px;margin:0 0 3px 16px}
+			.dbc-heat-months{display:grid;grid-auto-flow:column;grid-auto-columns:13px;gap:3px;font-size:9px;opacity:.55;height:12px;margin:0 0 3px 16px}
 			.dbc-heat-months span{white-space:nowrap}
-			.dbc-heat-body{display:flex;gap:3px}
-			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;font-size:8px;opacity:.45;width:13px}
+			.dbc-heat-body{display:flex;gap:3px;align-items:flex-start}
+			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,13px);gap:3px;font-size:8px;opacity:.45;width:13px}
 			.dbc-heat-wk span{display:flex;align-items:center;line-height:1}
-			.dbc-heat-grid{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;flex:1;min-width:0}
-			.dbc-heat-cell{aspect-ratio:1;width:100%;min-width:0;border-radius:4px;border:1px solid transparent;transition:transform .12s,border-color .12s;cursor:default}
+			/* Codex/GitHub 式固定 13px 密集小格子：一列一周、一行一星期，左对齐不拉伸 */
+			.dbc-heat-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,13px);grid-auto-columns:13px;gap:3px}
+			.dbc-heat-cell{width:13px;height:13px;border-radius:3px;border:1px solid transparent;transition:transform .12s,border-color .12s;cursor:default}
 			.dbc-heat-cell:hover{transform:scale(1.18);border-color:var(--dsw-alias-border-l2,rgba(128,128,128,.45));position:relative;z-index:1}
 			.dbc-hl-0{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
 			.dbc-hl-1{background:rgba(59,130,246,.30)}
@@ -294,10 +295,7 @@ window.__ModuleLoader__.load({
 				}
 			}
 			container.querySelector(".dbc-heat-grid").innerHTML = cells;
-			// 显式等分列（ZCode 用法）：auto 列不受容器宽度约束，格子会被 aspect-ratio 撑爆
-			container.querySelector(".dbc-heat-grid").style.gridTemplateColumns = `repeat(${weeks}, minmax(0, 1fr))`;
 			container.querySelector(".dbc-heat-months").innerHTML = months;
-			container.querySelector(".dbc-heat-months").style.gridTemplateColumns = `repeat(${weeks}, minmax(0, 1fr))`;
 			let busiest = null;
 			for (const x of perDay) {
 				if (busiest === null || totalOf(x) > totalOf(busiest)) busiest = x;
