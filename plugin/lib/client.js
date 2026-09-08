@@ -72,18 +72,24 @@ window.__ModuleLoader__.load({
 			.dbc-amount{font-size:24px;font-weight:700;margin-top:8px;font-variant-numeric:tabular-nums}
 			.dbc-acct-line{font-size:11px;opacity:.6;margin-top:2px}
 			.dbc-stat .n{font-size:15px}
-			/* Codex/GitHub 风格用量热力图：小方块，列为周、行为星期，最多 16 周 */
-			.dbc-heat{margin-top:8px}
-			.dbc-heat-months{display:grid;grid-auto-flow:column;grid-auto-columns:13px;gap:3px;font-size:10px;opacity:.55;height:14px;margin:0 0 2px 19px}
-			.dbc-heat-body{display:flex;gap:3px;align-items:flex-start}
-			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,13px);gap:3px;font-size:9px;opacity:.5;width:16px}
+			/* ZCode 风格 Token 活动热力图：5 档离散色阶、方形格子带边框、悬停放大 */
+			.dbc-usage-heat{margin-top:8px}
+			.dbc-heat-summary{font-size:11px;opacity:.6;margin-bottom:6px}
+			.dbc-heat-months{display:grid;gap:3px;font-size:9px;opacity:.55;height:12px;margin:0 0 3px 16px}
+			.dbc-heat-months span{white-space:nowrap}
+			.dbc-heat-body{display:flex;gap:3px}
+			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;font-size:8px;opacity:.45;width:13px}
 			.dbc-heat-wk span{display:flex;align-items:center;line-height:1}
-			.dbc-heat-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,13px);grid-auto-columns:13px;gap:3px}
-			.dbc-heat-cell{width:13px;height:13px;border-radius:3px;background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
-			.dbc-heat-cell.dbc-today{outline:1.5px solid rgba(59,130,246,.85);outline-offset:-1px}
-			.dbc-heat-future{background:transparent}
-			.dbc-legend{display:flex;gap:3px;align-items:center;justify-content:flex-end;font-size:10px;opacity:.75;margin-top:6px}
-			.dbc-legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
+			.dbc-heat-grid{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;flex:1;min-width:0}
+			.dbc-heat-cell{aspect-ratio:1;width:100%;min-width:0;border-radius:4px;border:1px solid transparent;transition:transform .12s,border-color .12s;cursor:default}
+			.dbc-heat-cell:hover{transform:scale(1.18);border-color:var(--dsw-alias-border-l2,rgba(128,128,128,.45));position:relative;z-index:1}
+			.dbc-hl-0{background:var(--dsw-alias-bg-layer-2,rgba(128,128,128,.12))}
+			.dbc-hl-1{background:rgba(59,130,246,.30)}
+			.dbc-hl-2{background:rgba(59,130,246,.55)}
+			.dbc-hl-3{background:rgba(59,130,246,.80)}
+			.dbc-hl-4{background:#3b82f6}
+			.dbc-heat-legend{display:flex;gap:3px;align-items:center;justify-content:flex-end;font-size:10px;opacity:.7;margin-top:7px}
+			.dbc-heat-legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
 			[data-dsh-frame]{column-gap:0 !important}
 			body :has(> [class*="sidebarCol"]){column-gap:0 !important}
 			[class*="splitHandle"]{width:4px !important}
@@ -216,14 +222,15 @@ window.__ModuleLoader__.load({
 					`</tbody></table>`
 				: "";
 
-			const calendarHtml = `<h3>每日用量</h3>
-				<div class="dbc-heat">
+			const calendarHtml = `<h3>Token 活动</h3>
+				<div class="dbc-usage-heat">
+					<div class="dbc-heat-summary"></div>
 					<div class="dbc-heat-months"></div>
 					<div class="dbc-heat-body">
 						<div class="dbc-heat-wk"><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span><span></span></div>
 						<div class="dbc-heat-grid"></div>
 					</div>
-					<div class="dbc-legend"><i style="background:rgba(59,130,246,.3)"></i><i style="background:rgba(59,130,246,.6)"></i><i style="background:rgba(59,130,246,.95)"></i><span>少 → 多</span></div>
+					<div class="dbc-heat-legend"><span>较少</span><i class="dbc-hl-0"></i><i class="dbc-hl-1"></i><i class="dbc-hl-2"></i><i class="dbc-hl-3"></i><i class="dbc-hl-4"></i><span>较多</span></div>
 				</div>`;
 
 			return `
@@ -238,28 +245,27 @@ window.__ModuleLoader__.load({
 				<button class="dbc-refresh" type="button">刷新余额</button>
 			`;
 		}
-		/** Codex/GitHub-style heatmap: one column per week (Mon first), one row per
-		 *  weekday. The window spans from the oldest perDay entry up to the current
-		 *  week, capped at 16 weeks; days after today render transparent. */
+		const shortModel = (m) => String(m).replace("deepseek-v4-", "");
+
+		/** ZCode-style token activity heatmap: weekly columns (Mon first), 7 rows,
+		 *  5 discrete levels (sqrt-damped quantile), bordered rounded cells with
+		 *  hover scale, month ticks, busiest-day summary. Tooltip carries the
+		 *  per-model breakdown from perDay.models. */
 		function mountHeatmap(container, perDay) {
 			if (container === null || perDay === void 0) return;
-			const byDay = new Map(perDay.map((x) => [x.date, x.input + x.cacheRead + x.output]));
-			const maxAll = Math.max(1, ...byDay.values());
+			const totalOf = (x) => (x?.input ?? 0) + (x?.cacheRead ?? 0) + (x?.output ?? 0);
+			const byDay = new Map(perDay.map((x) => [x.date, x]));
 			const pad = (x) => String(x).padStart(2, "0");
 			const kOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 			const today = new Date();
-			const tKey = kOf(today);
 			const monday = new Date(today);
 			monday.setDate(monday.getDate() - (today.getDay() + 6) % 7);
-			// weeks: cover the oldest entry, minimum 4, cap 16 (fits the modal width)
-			let weeks = 4;
-			const oldest = perDay[0]?.date;
-			if (typeof oldest === "string") {
-				const o = new Date(oldest + "T00:00:00");
-				if (!Number.isNaN(o.getTime())) weeks = Math.min(16, Math.max(4, Math.ceil((monday - o) / 6048e5) + 1));
-			}
+			// 固定 18 周（≈ 服务端 perDay 的 120 天窗口）：列数恒定格子才恒定，
+			// 数据稀疏时显示中性底色的空白格子，与 ZCode/GitHub 的固定年度网格一致
+			const weeks = 18;
 			const start = new Date(monday);
 			start.setDate(start.getDate() - (weeks - 1) * 7);
+			const maxV = Math.max(1, ...perDay.map(totalOf));
 			let cells = "";
 			let months = "";
 			let lastMonth = -1;
@@ -268,21 +274,39 @@ window.__ModuleLoader__.load({
 				weekStart.setDate(start.getDate() + w * 7);
 				if (weekStart.getMonth() !== lastMonth) {
 					lastMonth = weekStart.getMonth();
-					months += `<span style="grid-column:${w + 1}">${weekStart.getMonth() + 1}月</span>`;
+					months += `<span style="grid-column:${w + 1} / span 2">${weekStart.getMonth() + 1}月</span>`;
 				}
 				for (let i = 0; i < 7; i++) {
 					const day = new Date(weekStart);
 					day.setDate(weekStart.getDate() + i);
-					if (day > today) { cells += '<i class="dbc-heat-cell dbc-heat-future"></i>'; continue; }
-					const v = byDay.get(kOf(day)) ?? 0;
-					const a = v === 0 ? 0 : 0.15 + 0.85 * Math.sqrt(v / maxAll);
-					const bg = v === 0 ? "" : ` style="background:rgba(59,130,246,${a.toFixed(2)})"`;
-					const todayCls = kOf(day) === tKey ? " dbc-today" : "";
-					cells += `<i class="dbc-heat-cell${todayCls}"${bg} title="${esc(kOf(day))} · ${fmtTokens(v)} tok"></i>`;
+					const key = kOf(day);
+					const entry = day <= today ? byDay.get(key) : void 0;
+					const v = entry !== void 0 ? totalOf(entry) : 0;
+					// sqrt damps single-day spikes; 5 discrete levels like ZCode's heatmap-0..4
+					const t = v === 0 ? 0 : Math.sqrt(v / maxV);
+					const level = t === 0 ? 0 : 1 + Math.min(3, Math.floor(t * 4));
+					let title = `${key} · ${fmtTokens(v)} tok`;
+					if (entry?.models !== void 0) {
+						const parts = Object.entries(entry.models).filter(([, n]) => n > 0).map(([m, n]) => `${shortModel(m)} ${fmtTokens(n)}`);
+						if (parts.length > 0) title += `（${parts.join(" / ")}）`;
+					}
+					cells += `<i class="dbc-heat-cell dbc-hl-${level}" title="${esc(title)}"></i>`;
 				}
 			}
-			container.querySelector(".dbc-heat-months").innerHTML = months;
 			container.querySelector(".dbc-heat-grid").innerHTML = cells;
+			// 显式等分列（ZCode 用法）：auto 列不受容器宽度约束，格子会被 aspect-ratio 撑爆
+			container.querySelector(".dbc-heat-grid").style.gridTemplateColumns = `repeat(${weeks}, minmax(0, 1fr))`;
+			container.querySelector(".dbc-heat-months").innerHTML = months;
+			container.querySelector(".dbc-heat-months").style.gridTemplateColumns = `repeat(${weeks}, minmax(0, 1fr))`;
+			let busiest = null;
+			for (const x of perDay) {
+				if (busiest === null || totalOf(x) > totalOf(busiest)) busiest = x;
+			}
+			const summary = container.querySelector(".dbc-heat-summary");
+			if (busiest !== null && totalOf(busiest) > 0) {
+				const [y, m, d] = busiest.date.split("-");
+				summary.textContent = `最活跃日期是 ${Number(m)}月${Number(d)}日，约 ${fmtTokens(totalOf(busiest))} tokens`;
+			}
 		}
 
 		function openModal() {
@@ -306,7 +330,7 @@ window.__ModuleLoader__.load({
 				const first = Array.isArray(data.providers) && data.providers.length > 0 ? data.providers[0].id : null;
 				const current = modal.dataset.dbcProv ?? first;
 				modal.innerHTML = renderModal(data, current);
-				mountHeatmap(modal.querySelector(".dbc-heat"), data.daily?.perDay);
+				mountHeatmap(modal.querySelector(".dbc-usage-heat"), data.daily?.perDay);
 				const provSel = modal.querySelector("#dbc-prov");
 				if (provSel !== null) {
 					provSel.value = String(current);

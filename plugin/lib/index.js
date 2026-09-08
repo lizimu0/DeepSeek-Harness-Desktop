@@ -316,9 +316,16 @@ function dailySummary() {
 			const priced = rateForModel(raw.model)
 			const s = { ...raw, cost: costFor(raw, priced.rates).total, pricedModel: priced.model }
 			bump(total, s)
-			const day = days.get(localDateKey(s.time)) ?? empty()
+			const dKey = localDateKey(s.time)
+			const day = days.get(dKey) ?? { ...empty(), models: new Map() }
+			if (day.models === undefined) day.models = new Map()
 			bump(day, s)
-			days.set(localDateKey(s.time), day)
+			days.set(dKey, day)
+			const dm = day.models.get(s.pricedModel) ?? { input: 0, cacheRead: 0, output: 0 }
+			dm.input += s.input
+			dm.cacheRead += s.cacheRead
+			dm.output += s.output
+			day.models.set(s.pricedModel, dm)
 			const mKey = s.pricedModel
 			bump(models.get(mKey) ?? models.set(mKey, empty()).get(mKey), s)
 			let pv = providers.get(s.provider)
@@ -333,7 +340,13 @@ function dailySummary() {
 		}
 	} catch { rootOk = false }
 	const readSum = total.input + total.cacheRead
-	const perDay = [...days.entries()].map(([date, d]) => ({ date, input: d.input, cacheRead: d.cacheRead, output: d.output })).sort((a, b) => (a.date < b.date ? -1 : 1))
+	const perDay = [...days.entries()].map(([date, d]) => ({
+		date,
+		input: d.input,
+		cacheRead: d.cacheRead,
+		output: d.output,
+		models: Object.fromEntries([...(d.models?.entries() ?? [])].map(([k, m]) => [k, m.input + m.cacheRead + m.output])),
+	})).sort((a, b) => (a.date < b.date ? -1 : 1))
 	const modelsOut = [...models.entries()].map(([model, m]) => ({ model, ...m })).sort((a, b) => b.cost - a.cost)
 	const providersOut = {}
 	for (const [id, pv] of providers) {
