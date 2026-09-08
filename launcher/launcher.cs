@@ -303,7 +303,8 @@ internal static class Program
         catch { }
         // 直接以 node 启动,不再经过 cmd.exe /c 字符串拼接(消除命令注入面),
         // 日志重定向改为自管:stdout/stderr 异步追加到同一文件
-        var psi = new ProcessStartInfo(node, "\"" + bin + "\" web --port " + Port);
+        // --no-open: dsh web 默认会打开系统默认浏览器,桌面壳用自己的 WebView2 窗口,别再弹浏览器
+        var psi = new ProcessStartInfo(node, "\"" + bin + "\" web --no-open --port " + Port);
         psi.UseShellExecute = false;
         psi.CreateNoWindow = true;
         psi.WorkingDirectory = Path.GetDirectoryName(bin);
