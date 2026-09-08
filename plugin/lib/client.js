@@ -75,14 +75,14 @@ window.__ModuleLoader__.load({
 			/* ZCode 风格 Token 活动热力图：5 档离散色阶、方形格子带边框、悬停放大 */
 			.dbc-usage-heat{margin-top:8px}
 			.dbc-heat-summary{font-size:11px;opacity:.6;margin-bottom:6px}
-			.dbc-heat-months{display:grid;grid-auto-flow:column;grid-auto-columns:13px;gap:3px;font-size:10px;opacity:.6;height:14px;margin:0 0 3px 16px}
+			.dbc-heat-months{display:grid;grid-auto-flow:column;grid-auto-columns:16px;gap:4px;font-size:11px;opacity:.6;height:15px;margin:0 0 3px 20px}
 			.dbc-heat-months span{white-space:nowrap;justify-self:start}
-			.dbc-heat-body{display:flex;gap:3px;align-items:flex-start}
-			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,13px);gap:3px;font-size:8px;opacity:.45;width:13px}
+			.dbc-heat-body{display:flex;gap:4px;align-items:flex-start}
+			.dbc-heat-wk{display:grid;grid-template-rows:repeat(7,16px);gap:4px;font-size:9px;opacity:.45;width:16px}
 			.dbc-heat-wk span{display:flex;align-items:center;line-height:1}
-			/* Codex/GitHub 式固定 13px 密集小格子：一列一周、一行一星期，左对齐不拉伸 */
-			.dbc-heat-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,13px);grid-auto-columns:13px;gap:3px}
-			.dbc-heat-cell{width:13px;height:13px;border-radius:3px;border:1px solid transparent;transition:transform .12s,border-color .12s;cursor:default}
+			/* Codex/GitHub 式固定 16px 密集小格子：一列一周、一行一星期，左对齐不拉伸 */
+			.dbc-heat-grid{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,16px);grid-auto-columns:16px;gap:4px}
+			.dbc-heat-cell{width:16px;height:16px;border-radius:4px;border:1px solid transparent;transition:transform .12s,border-color .12s;cursor:default}
 			.dbc-heat-cell:hover{transform:scale(1.18);border-color:var(--dsw-alias-border-l2,rgba(128,128,128,.45));position:relative;z-index:1}
 			/* 空白格用固定中性灰：主题的 bg-layer-2 与弹窗背景(layer-3)几乎同色，格子会隐形 */
 			.dbc-hl-0{background:rgba(128,128,128,.16)}
@@ -90,8 +90,8 @@ window.__ModuleLoader__.load({
 			.dbc-hl-2{background:rgba(59,130,246,.55)}
 			.dbc-hl-3{background:rgba(59,130,246,.80)}
 			.dbc-hl-4{background:#3b82f6}
-			.dbc-heat-legend{display:flex;gap:3px;align-items:center;justify-content:flex-end;font-size:10px;opacity:.7;margin-top:7px}
-			.dbc-heat-legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+			.dbc-heat-legend{display:flex;gap:4px;align-items:center;justify-content:flex-end;font-size:10px;opacity:.7;margin-top:8px}
+			.dbc-heat-legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
 			[data-dsh-frame]{column-gap:0 !important}
 			body :has(> [class*="sidebarCol"]){column-gap:0 !important}
 			[class*="splitHandle"]{width:4px !important}
