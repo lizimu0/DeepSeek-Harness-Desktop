@@ -11,7 +11,8 @@ $plugins = @(
     @{ dir = Join-Path $repo 'plugin';       name = 'dsh-balance-card' },
     @{ dir = Join-Path $repo 'quick-chat';   name = 'dsh-quick-chat' },
     @{ dir = Join-Path $repo 'commands-zh';  name = 'dsh-commands-zh' },
-    @{ dir = Join-Path $repo 'follow-model'; name = 'dsh-subagent-follow-model' }
+    @{ dir = Join-Path $repo 'follow-model'; name = 'dsh-subagent-follow-model' },
+    @{ dir = Join-Path $repo 'relay-ua';     name = 'dsh-relay-ua' }
 )
 
 if (-not (Test-Path (Join-Path $profileDir 'package.json'))) {
@@ -67,7 +68,7 @@ if ($conn) {
         Start-Sleep -Seconds 2
         Write-Host 'stopped old dsh web'
     } else {
-        Write-Host ("port 3080 is occupied by '{0}' (pid {1}), not killing" -f ($owner.ProcessName ?? 'unknown'), $conn.OwningProcess)
+        Write-Host ("port 3080 is occupied by '{0}' (pid {1}), not killing" -f $(if ($null -ne $owner) { $owner.ProcessName } else { 'unknown' }), $conn.OwningProcess)
     }
 }
 $launcher = Join-Path $env:USERPROFILE 'dsh-desktop\dsh-desktop.exe'

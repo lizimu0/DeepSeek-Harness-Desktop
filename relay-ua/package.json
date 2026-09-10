@@ -1,0 +1,21 @@
+{
+  "name": "dsh-relay-ua",
+  "description": "Presents a Claude Code client User-Agent to relay providers that gate on client fingerprints (only the configured hostnames; all other traffic passes through untouched).",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "files": [
+    "lib/**/*.js",
+    "cordis.patch.yml"
+  ],
+  "license": "MIT"
+}

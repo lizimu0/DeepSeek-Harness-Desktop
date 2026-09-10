@@ -43,6 +43,14 @@ DeepSeek Harness（DSH）轻量桌面套件：**约 1MB 的 WebView2 桌面壳**
 
 背景：dsh 原生行为是子代理继承父代理创建时种子化的 `AgentOptions` 路由——主会话中途切换模型后，子代理仍然用旧供应商的额度。本插件在 `agent/request` 瀑布外层改写子代理路由，语义与主会话一致（切换在下一步生效）。若想用 tool-subagent 配置里的静态 `agentOptions` 固定子代理模型，卸载本插件即可。
 
+### relay-ua/ — dsh-relay-ua 插件
+
+部分中转站（如 ps.air-outer.com）按客户端指纹准入，只放行官方 Claude Code 客户端的请求；而 dsh 出于归属标识的考虑强制在所有 LLM 请求上打自己的 User-Agent，且供应商配置的 `headers` 不允许覆盖 `user-agent`——两边设计叠加导致这类中转在 dsh 里永远报 "unauthorized client detected"。
+
+本插件在进程内包装 `globalThis.fetch`，**仅对** `relay-ua/lib/index.js` 顶部 `TARGET_HOSTS` 列出的域名改写 User-Agent 为 claude-cli，其余出站流量原样透传。接入新的中转站时把域名加进该列表并重启即可。
+
+注意：这是对服务端客户端准入检测的主动规避，仅应使用在自己持有合法密钥的账号上，且可能违反对应服务条款。
+
 ## 一键安装
 
 把整个仓库放到任意稳定位置，运行：
