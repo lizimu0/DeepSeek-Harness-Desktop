@@ -76,14 +76,19 @@ if (Test-Path $launcher) {
     Start-Process $launcher
     Write-Host 'launcher started（托盘常驻，窗口将自动打开）'
 } else {
-    # 无启动器：直接后台拉起 node。全局安装优先（与 launcher 查找顺序一致），其次 npx 运行缓存
+    # 无启动器：直接后台拉起 node。优先桌面壳自带的便携 Node 24（dsh 0.1.5+ 需要），
+    # 其次全局安装（与 launcher 查找顺序一致），最后 npx 运行缓存
+    $bundledNode = Join-Path $env:USERPROFILE 'dsh-desktop\node\node.exe'
     $dshBin = Get-ChildItem "$env:APPDATA\npm\node_modules\@deepseek-ai\dsh\lib\bin.js" -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if (-not $dshBin) {
         $dshBin = Get-ChildItem "$env:LOCALAPPDATA\npm-cache\_npx\*\node_modules\@deepseek-ai\dsh\lib\bin.js" -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
     }
-    if ($dshBin) {
+    if ($dshBin -and (Test-Path $bundledNode)) {
+        Start-Process $bundledNode -ArgumentList "`"$($dshBin.FullName)`" web --no-open --port 3080" -WindowStyle Hidden
+        Write-Host 'dsh web started in background with bundled Node 24 (http://127.0.0.1:3080)'
+    } elseif ($dshBin) {
         Start-Process node -ArgumentList "`"$($dshBin.FullName)`" web --port 3080" -WindowStyle Hidden
         Write-Host 'dsh web started in background (http://127.0.0.1:3080)'
     } else {

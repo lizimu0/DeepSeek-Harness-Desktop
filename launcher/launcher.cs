@@ -13,6 +13,8 @@ internal static class Program
 {
     internal const int Port = 3080;
     public static readonly string Url = "http://127.0.0.1:" + Port;
+    /** 就绪 URL（含 dsh 0.1.5+ 的 token）；服务输出解析到之前退回裸地址 */
+    public static string WebUrl = Url;
     public static NotifyIcon Tray;
     public static MainForm Form;
     public static Process ServerCmd;
@@ -276,7 +278,8 @@ internal static class Program
             req.Method = "GET";
             using (var resp = (HttpWebResponse)req.GetResponse())
             {
-                return (int)resp.StatusCode >= 200 && (int)resp.StatusCode < 400;
+                // dsh 0.1.5+ 对裸路径返回 401（token 鉴权），仍代表服务已就绪
+                return (int)resp.StatusCode >= 200 && (int)resp.StatusCode < 500;
             }
         }
         catch
@@ -319,6 +322,11 @@ internal static class Program
             if (line == null) return;
             try
             {
+                // dsh 0.1.5+ 的 Web UI 带 token 鉴权：启动输出会给出 /?token=… 的就绪 URL，
+                // 抓下来供 WebView 导航（裸路径会 401）
+                var m = System.Text.RegularExpressions.Regex.Match(
+                    line, @"http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+");
+                if (m.Success) WebUrl = m.Value;
                 lock (sync) File.AppendAllText(log, "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line + Environment.NewLine);
             }
             catch { }
@@ -432,6 +440,10 @@ internal static class Program
 
     private static string FindNode()
     {
+        // dsh 0.1.5+ 的 bin.js 依赖 import.meta.main（Node 24+）；系统 Node 可能较旧，
+        // 优先使用随桌面壳部署的便携 Node（~\dsh-desktop\node\node.exe）
+        string bundled = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "dsh-desktop", "node", "node.exe");
+        if (File.Exists(bundled)) return bundled;
         var path = Environment.GetEnvironmentVariable("PATH") ?? "";
         foreach (var d in path.Split(Path.PathSeparator))
         {
@@ -663,7 +675,8 @@ internal class MainForm : Form
         _navigated = true;
         try
         {
-            _web.Source = new Uri(Program.Url);
+            // dsh 0.1.5+ 需要 token 化的就绪 URL；解析到之前用裸地址（老版本兼容）
+            _web.Source = new Uri(Program.WebUrl);
         }
         catch
         {

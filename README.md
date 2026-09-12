@@ -9,6 +9,8 @@ DeepSeek Harness（DSH）轻量桌面套件：**约 1MB 的 WebView2 桌面壳**
 用 .NET Framework + WebView2（系统自带运行时）把 `dsh web` 包成真正的桌面应用：
 
 - **一键启动**：双击快捷方式自动探测 3080 端口，未运行则后台拉起 `dsh web`，就绪后打开窗口
+- **内置 Node 24**：dsh 0.1.5+ 的启动入口依赖 `import.meta.main`（Node 24+），把便携版 `node.exe` 放在 `%USERPROFILE%\dsh-desktop\node\` 即可优先使用（系统 Node 不受影响）；无此文件时回退 PATH 里的 node
+- **token 鉴权适配**：dsh 0.1.5+ 的 Web UI 带 token 鉴权（裸路径 401），启动器从服务输出抓取 `?token=…` 就绪 URL 再导航；健康探测把 401 视为服务已就绪
 - **服务保活**：node 服务意外退出时托盘每分钟自动拉起，窗口可见时自动刷新页面；重启失败弹托盘气泡提示
 - **托盘常驻**：叉掉窗口 = 收进托盘后台运行；托盘右键「退出」= 按端口精确结束 dsh 服务并退出
 - **品牌启动画面**：窗口立即弹出显示鲸鱼 Logo 过渡，页面真正渲染后再揭开，避免白屏
