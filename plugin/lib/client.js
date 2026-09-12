@@ -12,8 +12,10 @@ window.__ModuleLoader__.load({
 			.dbc-fallback{display:flex;align-items:center;gap:8px;width:calc(100% - 16px);margin:4px 8px;padding:7px 10px;border:1px solid rgba(128,128,128,.22);border-radius:10px;background:rgba(128,128,128,.08);color:inherit;font:inherit;font-size:12px;cursor:pointer;text-align:left}
 			.dbc-cloned{cursor:pointer}
 			/* Bottom stack via flex order — zero DOM moving, stable from the very first paint. */
-			[data-dsh-taskboard-entry]{order:98 !important;height:34px !important;color:var(--dsw-alias-label-primary) !important;border-radius:12px !important;margin:4px -4px !important;padding:6px 2px 6px 10px !important;font-size:14px !important;line-height:22px !important;width:calc(100% + 8px) !important;box-sizing:border-box !important}
-			button[data-dsh-balance-card]{order:99 !important}
+			[data-dsh-taskboard-entry]{order:98 !important;flex:0 0 auto !important;height:34px !important;color:var(--dsw-alias-label-primary) !important;border-radius:12px !important;margin:4px -4px !important;padding:6px 2px 6px 10px !important;font-size:14px !important;line-height:22px !important;width:calc(100% + 8px) !important;box-sizing:border-box !important}
+			/* placeCard clones the settings row's className; in some sidebar states that
+			   class carries flex-grow, which stretched the card into a tall empty box. */
+			button[data-dsh-balance-card]{order:99 !important;flex:0 0 auto !important;height:36px !important;min-height:36px !important;max-height:36px !important}
 			[class*="footArea"]{order:100 !important}
 			.dbc-value{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;opacity:.9}
 			.dbc-value.dbc-err{opacity:.55;font-weight:400}
