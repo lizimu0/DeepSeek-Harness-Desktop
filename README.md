@@ -76,6 +76,17 @@ cd launcher
 
 `build.ps1` 会把产物（exe、图标、WebView2 控件）部署到 `%USERPROFILE%\dsh-desktop`，桌面快捷方式与 `install.ps1` 的重启逻辑都指向该目录；仓库内缺 WebView2 控件时会自动从部署目录回补。
 
+## 排障（桌面壳白屏 / 打不开）
+
+桌面壳的决策日志在 `~/.dsh/launcher.log`（探活结果、拉起服务、导航 URL、失败原因），服务自身日志在 `~/.dsh/web-server.log`。白屏类问题先看这两个文件，再动代码。
+
+历史根因备忘（都曾真实造成白屏）：
+
+- **401 被当成「服务没起」**：dsh 0.1.5+ 的裸路径返回 401（token 鉴权），而 `HttpWebRequest.GetResponse` 对 4xx 抛 `WebException`。探活若只检查成功响应，会把健康服务判死 → 重复拉起 node（`EADDRINUSE`）→ 提前 return → WebView2 永不导航 → 白屏。探活必须把 `WebException.Response` 非空视为就绪。
+- **日志写不进 = 证据灭失**：服务日志可能正被另一个实例以 shell 重定向方式占用，追加写入必须用 `FileShare.ReadWrite`，否则异常被吞、崩溃栈全丢。
+- **后台线程静默死亡**：显示路径跑在后台线程上，一个未处理异常会让窗口永不出现、splash 8 秒后撤掉露出空白，且之后托盘与单实例的显示信号无人响应。`EnsureServerAndShow` 必须整体兜底。
+- **失败也要可见**：失败时窗口内渲染 data: 错误页并亮窗。纯白窗口是最难排查的症状，绝不允许作为失败态出现。
+
 ## 配置
 
 余额相关配置文件都放在 `~/.dsh/`，删除或不存在的文件使用默认值：

@@ -229,25 +229,46 @@ internal static class Program
 
     private static void EnsureServerAndShow()
     {
+        try
+        {
+            EnsureServerAndShowCore();
+        }
+        catch (Exception ex)
+        {
+            // 后台线程上的未处理异常会静默杀死显示路径：窗口不出现、splash 8 秒后
+            // 撤掉露出空白 WebView2，之后托盘与单实例的显示信号也无人响应
+            Log("EnsureServerAndShow 异常: " + ex);
+            Fail("打开 DeepSeek Harness 失败：" + ex.Message + "\n日志：" + LauncherLogPath());
+            try { ShowWindow(); } catch { }
+        }
+    }
+
+    private static void EnsureServerAndShowCore()
+    {
         lock (OpenLock)
         {
-            if (!Probe(2000))
+            bool alive = Probe(2000);
+            Log("probe=" + (alive ? "alive" : "down"));
+            if (!alive)
             {
                 string bin = FindDshBin();
                 string node = FindNode();
                 if (bin == null) { Fail("未找到 dsh 安装（@deepseek-ai/dsh 的 lib/bin.js）。"); return; }
                 if (node == null) { Fail("未找到 node.exe，请确认已安装 Node.js 并加入 PATH。"); return; }
+                Log("start server node=" + node + " bin=" + bin);
                 StartServer(node, bin);
                 if (!WaitReady(TimeSpan.FromSeconds(120)))
                 {
                     Fail("dsh web 未能在 120 秒内就绪。\n日志：" + LogPath());
                     return;
                 }
+                Log("server ready");
             }
             // 服务已就绪但还没拿到 token URL（例如本次打开时服务已在运行，
             // StartServer 没执行）：从日志里取最近一次启动打印的就绪 URL。
             // 旧 token 也不会死锁——WebView2 里已换发的 cookie 会继续放行。
             if (ReferenceEquals(WebUrl, Url)) AdoptTokenUrlFromLog();
+            Log("webUrl=" + WebUrl);
         }
         if (Form != null) Form.SetSplashStatus("正在加载界面…");
         ShowWindow();
@@ -292,6 +313,29 @@ internal static class Program
         return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh", "web-server.log");
     }
 
+    private static readonly object LauncherLogLock = new object();
+
+    private static string LauncherLogPath()
+    {
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh", "launcher.log");
+    }
+
+    /** 启动器自身决策日志：探活/拉起/导航/失败都留痕，白屏类故障才有证据链 */
+    public static void Log(string message)
+    {
+        try
+        {
+            string path = LauncherLogPath();
+            lock (LauncherLogLock)
+            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+            using (var w = new StreamWriter(fs))
+            {
+                w.WriteLine("[" + DateTime.Now.ToString("MM-dd HH:mm:ss") + "] " + message);
+            }
+        }
+        catch { }
+    }
+
     private static bool Probe(int timeoutMs)
     {
         try
@@ -301,9 +345,15 @@ internal static class Program
             req.Method = "GET";
             using (var resp = (HttpWebResponse)req.GetResponse())
             {
-                // dsh 0.1.5+ 对裸路径返回 401（token 鉴权），仍代表服务已就绪
-                return (int)resp.StatusCode >= 200 && (int)resp.StatusCode < 500;
+                return true;
             }
+        }
+        catch (WebException ex)
+        {
+            // dsh 0.1.5+ 的裸路径返回 401（token 鉴权），而 GetResponse 对 4xx 抛
+            // WebException：必须把"拿到了 HTTP 响应"当作服务已就绪，否则会误判为
+            // 未启动并重复拉起服务（EADDRINUSE），最终 WebView2 永不导航而成白屏
+            return ex.Response is HttpWebResponse;
         }
         catch
         {
@@ -350,7 +400,16 @@ internal static class Program
                 var m = System.Text.RegularExpressions.Regex.Match(
                     line, @"http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+");
                 if (m.Success) WebUrl = m.Value;
-                lock (sync) File.AppendAllText(log, "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line + Environment.NewLine);
+                lock (sync)
+                {
+                    // 日志可能正被另一个启动器实例以 shell 重定向方式占用；
+                    // AppendAllText 的默认共享模式会抛异常并把崩溃证据整个吞掉
+                    using (var fs = new FileStream(log, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                    using (var w = new StreamWriter(fs))
+                    {
+                        w.WriteLine("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line);
+                    }
+                }
             }
             catch { }
         };
@@ -518,6 +577,11 @@ internal static class Program
 
     private static void Fail(string message)
     {
+        Log("FAIL: " + message.Replace("\r", " ").Replace("\n", " | "));
+        if (Form != null)
+        {
+            try { Form.BeginInvoke(new Action(() => Form.ShowErrorPage(message))); } catch { }
+        }
         MessageBox.Show(message, "DeepSeek Harness", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }
@@ -700,12 +764,30 @@ internal class MainForm : Form
         try
         {
             // dsh 0.1.5+ 需要 token 化的就绪 URL；解析到之前用裸地址（老版本兼容）
+            Program.Log("navigate " + Program.WebUrl);
             _web.Source = new Uri(Program.WebUrl);
         }
-        catch
+        catch (Exception ex)
         {
             _navigated = false;
+            Program.Log("navigate failed: " + ex.Message);
         }
+    }
+
+    /** 失败时把窗口亮出来并给出可读原因；白窗本身就是最难排查的症状 */
+    public void ShowErrorPage(string reason)
+    {
+        try
+        {
+            string html = "<!doctype html><meta charset='utf-8'><body style='font:14px/1.8 system-ui,sans-serif;padding:48px;color:#333'>"
+                + "<h2 style='font-size:16px;margin:0 0 12px'>DeepSeek Harness 未能加载界面</h2>"
+                + "<pre style='white-space:pre-wrap;color:#a00;font:12px/1.6 monospace'>"
+                + System.Net.WebUtility.HtmlEncode(reason ?? "") + "</pre>"
+                + "<p style='color:#888'>处理后可从托盘图标重新打开；启动器决策日志见 ~/.dsh/launcher.log</p></body>";
+            _web.Source = new Uri("data:text/html;charset=utf-8," + Uri.EscapeDataString(html));
+            ActivateWindow();
+        }
+        catch { }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
