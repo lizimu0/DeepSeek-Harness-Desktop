@@ -244,9 +244,32 @@ internal static class Program
                     return;
                 }
             }
+            // 服务已就绪但还没拿到 token URL（例如本次打开时服务已在运行，
+            // StartServer 没执行）：从日志里取最近一次启动打印的就绪 URL。
+            // 旧 token 也不会死锁——WebView2 里已换发的 cookie 会继续放行。
+            if (ReferenceEquals(WebUrl, Url)) AdoptTokenUrlFromLog();
         }
         if (Form != null) Form.SetSplashStatus("正在加载界面…");
         ShowWindow();
+    }
+
+    /** Scan the tail of the server log for the most recent ready URL (with token). */
+    private static void AdoptTokenUrlFromLog()
+    {
+        try
+        {
+            string log = LogPath();
+            if (!File.Exists(log)) return;
+            using (var stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var reader = new StreamReader(stream))
+            {
+                string content = reader.ReadToEnd();
+                var matches = System.Text.RegularExpressions.Regex.Matches(
+                    content, @"http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+");
+                if (matches.Count > 0) WebUrl = matches[matches.Count - 1].Value;
+            }
+        }
+        catch { }
     }
 
     public static void QuitAll()
@@ -658,13 +681,14 @@ internal class MainForm : Form
     }
 
     /** Reload the webview after a background server restart — only when the
-     *  window is on screen; a hidden window re-navigates on next open anyway. */
+     *  window is on screen; a hidden window re-navigates on next open anyway.
+     *  Navigates to the fresh ready URL (new boot mints a new token). */
     public void ReloadIfVisible()
     {
         try
         {
             if (!Visible) return;
-            if (_web != null && _web.CoreWebView2 != null) _web.CoreWebView2.Reload();
+            if (_web != null && _web.CoreWebView2 != null && Program.WebUrl != null) _web.Source = new Uri(Program.WebUrl);
         }
         catch { }
     }
