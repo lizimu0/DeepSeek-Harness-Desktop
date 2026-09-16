@@ -255,19 +255,30 @@ internal static class Program
                 string node = FindNode();
                 if (bin == null) { Fail("未找到 dsh 安装（@deepseek-ai/dsh 的 lib/bin.js）。"); return; }
                 if (node == null) { Fail("未找到 node.exe，请确认已安装 Node.js 并加入 PATH。"); return; }
-                Log("start server node=" + node + " bin=" + bin);
-                StartServer(node, bin);
-                if (!WaitReady(TimeSpan.FromSeconds(120)))
+                // 服务偶发启动后立刻退出（端口竞争、初始化失败）：清掉可能失效的
+                // token 再重试一次，避免用户第一眼就是错误页
+                bool ready = false;
+                for (int attempt = 0; attempt < 2 && !ready; attempt++)
+                {
+                    Log("start server node=" + node + " bin=" + bin + " attempt=" + (attempt + 1));
+                    string before = WebUrl;
+                    StartServer(node, bin);
+                    ready = WaitReady(TimeSpan.FromSeconds(120));
+                    // 探活通过可能早于应用打印就绪 URL：等新 token 到达日志再采纳，
+                    // 否则这一轮会先拿旧 token 导航一次（虽能自愈，但白跑一趟）
+                    for (int i = 0; ready && i < 12 && ReferenceEquals(WebUrl, before); i++) Thread.Sleep(250);
+                    if (!ready) WebUrl = Url;
+                }
+                if (!ready)
                 {
                     Fail("dsh web 未能在 120 秒内就绪。\n日志：" + LogPath());
                     return;
                 }
                 Log("server ready");
             }
-            // 服务已就绪但还没拿到 token URL（例如本次打开时服务已在运行，
-            // StartServer 没执行）：从日志里取最近一次启动打印的就绪 URL。
-            // 旧 token 也不会死锁——WebView2 里已换发的 cookie 会继续放行。
-            if (ReferenceEquals(WebUrl, Url)) AdoptTokenUrlFromLog();
+            // 每次打开窗口都采纳日志里最新的一条就绪 URL：服务可能在本次打开前
+            // 已重启过（健康监控/上次会话拉起），旧 token 会落到 401/404 错误页。
+            AdoptTokenUrlFromLog();
             Log("webUrl=" + WebUrl);
         }
         if (Form != null) Form.SetSplashStatus("正在加载界面…");
@@ -275,7 +286,7 @@ internal static class Program
     }
 
     /** Scan the tail of the server log for the most recent ready URL (with token). */
-    private static void AdoptTokenUrlFromLog()
+    public static void AdoptTokenUrlFromLog()
     {
         try
         {
@@ -328,7 +339,8 @@ internal static class Program
             string path = LauncherLogPath();
             lock (LauncherLogLock)
             using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
-            using (var w = new StreamWriter(fs))
+            // 显式 UTF-8：默认编码会把中文用户名（路径里的「搁浅」）写成乱码
+            using (var w = new StreamWriter(fs, new System.Text.UTF8Encoding(false)))
             {
                 w.WriteLine("[" + DateTime.Now.ToString("MM-dd HH:mm:ss") + "] " + message);
             }
@@ -591,6 +603,9 @@ internal class MainForm : Form
     public bool ReallyExit;
     private WebView2 _web;
     private bool _navigated;
+    private int _healAttempts;
+    private bool _healPending;
+    private string _lastNavigatedUrl;
 
     public MainForm()
     {
@@ -654,6 +669,23 @@ internal class MainForm : Form
                         try { Process.Start(new ProcessStartInfo(e2.Uri) { UseShellExecute = true }); }
                         catch { }
                         e2.Handled = true;
+                    };
+                    // 自愈:服务重启会作废旧 token,旧地址落到 401/404 错误页。
+                    // 主文档导航失败或返回 4xx/5xx 时,采纳日志里最新的就绪地址重试。
+                    core.NavigationCompleted += (s2, e2) =>
+                    {
+                        if (e2.IsSuccess) { _healAttempts = 0; _healPending = false; return; }
+                        ScheduleSelfHeal();
+                    };
+                    core.WebResourceResponseReceived += (s2, e2) =>
+                    {
+                        try
+                        {
+                            if (e2.Response == null || e2.Response.StatusCode < 400) return;
+                            if (!string.Equals(new Uri(e2.Request.Uri).AbsolutePath, "/", StringComparison.Ordinal)) return;
+                            ScheduleSelfHeal();
+                        }
+                        catch { }
                     };
 #if !DEBUG
                     // 发布版关闭 DevTools,减少暴露面(调试构建保留)
@@ -759,19 +791,46 @@ internal class MainForm : Form
 
     public void EnsureNavigated()
     {
-        if (_navigated) return;
+        // 每次导航前重新采纳日志里最新的一条就绪 URL：服务换发 token 后，
+        // 这次打开就能直接进新页面，而不是停在旧地址的 401/404 上。
+        Program.AdoptTokenUrlFromLog();
+        string target = Program.WebUrl;
+        if (_navigated && target == _lastNavigatedUrl) return;
+        _lastNavigatedUrl = target;
         _navigated = true;
         try
         {
-            // dsh 0.1.5+ 需要 token 化的就绪 URL；解析到之前用裸地址（老版本兼容）
-            Program.Log("navigate " + Program.WebUrl);
-            _web.Source = new Uri(Program.WebUrl);
+            Program.Log("navigate " + target);
+            _web.Source = new Uri(target);
         }
         catch (Exception ex)
         {
             _navigated = false;
+            _lastNavigatedUrl = null;
             Program.Log("navigate failed: " + ex.Message);
         }
+    }
+
+    /** 有界自愈：主文档 4xx/5xx 或导航失败后，采纳最新就绪地址重试（退避递增）。 */
+    public void ScheduleSelfHeal()
+    {
+        if (InvokeRequired) { try { BeginInvoke(new Action(ScheduleSelfHeal)); } catch { } return; }
+        // 一次失败会同时触发 NavigationCompleted 与响应码两条路径，去重避免重复消耗重试额度
+        if (_healPending || _healAttempts >= 5) return;
+        _healPending = true;
+        _healAttempts++;
+        Program.Log("self-heal attempt " + _healAttempts);
+        var timer = new System.Windows.Forms.Timer { Interval = 800 * _healAttempts };
+        timer.Tick += (s2, e2) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            _healPending = false;
+            _navigated = false;
+            _lastNavigatedUrl = null;
+            EnsureNavigated();
+        };
+        timer.Start();
     }
 
     /** 失败时把窗口亮出来并给出可读原因；白窗本身就是最难排查的症状 */
