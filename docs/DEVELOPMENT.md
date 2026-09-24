@@ -5,7 +5,7 @@
 - Windows 10/11, WebView2 Runtime, .NET Framework 4.8.
 - PowerShell 5.1 or PowerShell 7 for Windows scripts.
 - Node.js 24.2 or later for the test suite (validated on 24.21). Use the optional portable runtime without replacing the system Node.
-- DSH 0.1.5-rc.2 is the locally verified integration target. An `rc` version remains a prerelease even when npm assigns it the `latest` tag.
+- DSH 0.1.7-rc.1 is the locally verified integration target. An `rc` version remains a prerelease even when npm assigns it the `latest` tag.
 
 ## Tests
 

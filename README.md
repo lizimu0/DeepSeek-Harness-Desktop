@@ -54,7 +54,7 @@ DSH 0.1.5-rc.2 本身已改进子代理对父请求路由的继承；不再沿�
 - Windows PowerShell 5.1 或 PowerShell 7。
 - 建议 Node.js 24。旧的 Node 22.15 缺少 `import.meta.main`，会让部分 DSH CLI 入口静默退出；更新的 Node 22 版本可能已支持，不应把所有 Node 22 一概判为不可用。
 - 可在 `%USERPROFILE%\dsh-desktop\node\node.exe` 放置便携 Node，避免改变系统 Node。便携运行时不是仓库自带文件，脚本不会自动下载或升级它。
-- 本轮集成验证版本是 **DSH 0.1.5-rc.2**。`rc` 仍是候选发布版，npm 的 `latest` 标签不等于稳定性保证。
+- 本轮集成验证版本是 **DSH 0.1.7-rc.1**。`rc` 仍是候选发布版，npm 的 `latest` 标签不等于稳定性保证。
 
 ## 安装官方核心
 

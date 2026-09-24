@@ -15,7 +15,7 @@ const coreDir = process.env.DSH_CORE_DIR ?? (process.platform === 'win32'
 	? join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai')
 	: '')
 const available = coreDir !== '' && existsSync(join(coreDir, 'dsh-scope', 'lib', 'index.js'))
-const options = { skip: available ? false : 'Set DSH_CORE_DIR to an installed dsh 0.1.5-rc.2 core for offline integration tests' }
+const options = { skip: available ? false : 'Set DSH_CORE_DIR to an installed dsh 0.1.7-rc.1 core for offline integration tests' }
 const load = (name) => import(pathToFileURL(join(coreDir, name, 'lib', 'index.js')).href)
 
 async function fixture(t) {
