@@ -7,7 +7,6 @@
 .EXAMPLE
 .\install.ps1 -Plugins quick-chat,commands-zh -Uninstall -WhatIf
 .NOTES
-历史 relay-ua 登记不在本脚本的管理集合中，始终原样保留。
 -Restart 是显式选择，且只接受默认 web profile 与可核实的 DSH 命令行。
 #>
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
