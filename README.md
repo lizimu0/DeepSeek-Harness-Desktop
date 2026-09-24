@@ -56,9 +56,24 @@ DSH 0.1.5-rc.2 本身已改进子代理对父请求路由的继承；不再沿�
 - 可在 `%USERPROFILE%\dsh-desktop\node\node.exe` 放置便携 Node，避免改变系统 Node。便携运行时不是仓库自带文件，脚本不会自动下载或升级它。
 - 本轮集成验证版本是 **DSH 0.1.5-rc.2**。`rc` 仍是候选发布版，npm 的 `latest` 标签不等于稳定性保证。
 
+## 安装官方核心
+
+本仓库**不打包、不缓存官方 DSH 本体**。本体自身只有几十 KB，但完整依赖树在 270 MB 量级（`@img`、`node-pty`、`sherpa-onnx`、`@opentelemetry`、`@google` 等），把它塞进版本库既会毁掉这个仓库的轻量定位，也会让第三方依赖的署名合规和安全更新责任落到本仓库头上。分发交给 npm。
+
+```powershell
+.\setup.ps1 -WhatIf                  # 预览：只报告 Node、npm 与目标版本，不安装
+.\setup.ps1                          # 安装脚本内置的已验证版本
+.\setup.ps1 -Version 0.1.7-rc.1      # 显式指定版本
+```
+
+- 只装进 npm 全局目录：Windows 上默认是当前用户的 `%APPDATA%\npm`，也正是启动器查找核心的位置。
+- `-Version` 必须给出明确的语义化版本，不接受 `latest` 这类浮动标签。rc 通道与 npm 的 `latest` 并不同步，沿用 `latest` 会装到与文档声明不一致的核心。
+- 安装后按真实落地文件核对版本，不只看 npm 的退出码；版本已经一致时一个文件也不改。
+- 不安装或升级 Node，不改动 profile、凭据或会话配置。Node 不满足要求时报错并指向便携运行时，由用户自行准备。
+
 ## 安装插件
 
-先运行官方 DSH 初始化 web profile，再在仓库执行：
+先完成上一节的核心安装，再初始化 web profile，然后在仓库执行：
 
 ```powershell
 .\install.ps1 -WhatIf

@@ -57,7 +57,7 @@ function Import-TestFunction([string]$Path, [string]$Name) {
     return [scriptblock]::Create($functionAst.Extent.Text)
 }
 
-$scriptFiles = @('install.ps1', 'launcher\build.ps1', 'launcher\get-webview2.ps1', 'launcher\make-ico.ps1', 'scripts\test-powershell.ps1', 'tests\powershell.tests.ps1')
+$scriptFiles = @('install.ps1', 'setup.ps1', 'launcher\build.ps1', 'launcher\get-webview2.ps1', 'launcher\make-ico.ps1', 'scripts\test-powershell.ps1', 'tests\powershell.tests.ps1')
 Test-Case 'PowerShell parser and UTF-8 BOM scripts' {
     foreach ($relative in $scriptFiles) {
         $path = Join-Path $RepositoryRoot $relative
@@ -103,6 +103,7 @@ $install = Join-Path $fixture 'install.ps1'
 $build = Join-Path $launcher 'build.ps1'
 $download = Join-Path $launcher 'get-webview2.ps1'
 $ico = Join-Path $launcher 'make-ico.ps1'
+$setup = Join-Path $RepositoryRoot 'setup.ps1'
 
 Test-Case 'install -WhatIf creates no files or links, even with -Restart' {
     $profile = New-TestProfile 'whatif-profile'
@@ -458,5 +459,35 @@ Test-Case 'deployment rolls back committed files when a later target becomes loc
     }
     Assert-True ((Get-Hash (Join-Path $deploy '.dsh-desktop.manifest.json')) -eq $beforeManifestHash) 'rollback changed manifest'
     Assert-True (@(Get-ChildItem -LiteralPath $deploy -Force -Directory | Where-Object { $_.Name -like '.dsh-desktop-stage-*' }).Count -eq 0) 'rollback leaked incoming files'
+}
+Test-Case 'setup mirrors launcher version rules and Node candidate order' {
+    . (Import-TestFunction $setup 'Get-NormalizedCoreVersion')
+    . (Import-TestFunction $setup 'Test-SupportedNodeVersion')
+    . (Import-TestFunction $setup 'Get-DshCorePackageDirectory')
+    . (Import-TestFunction $setup 'Get-NodeCandidates')
+    # 版本规范化必须与启动器 SemanticVersion 同形：拒绝浮动标签、短版本与前导零。
+    Assert-True ((Get-NormalizedCoreVersion '0.1.7-rc.1') -eq '0.1.7-rc.1') 'exact prerelease version changed'
+    Assert-True ((Get-NormalizedCoreVersion 'v0.1.7-rc.1') -eq '0.1.7-rc.1') 'v prefix not normalized'
+    Assert-True ((Get-NormalizedCoreVersion '1.0.0+build.9') -eq '1.0.0') 'build metadata not dropped'
+    Assert-True ((Get-NormalizedCoreVersion '0.1.7-rc.2') -ne (Get-NormalizedCoreVersion '0.1.7-rc.10')) 'prerelease identity collapsed'
+    foreach ($invalid in 'latest', '0.1', '01.0.0', '0.1.7-rc.01', '1.0.0.0', '') {
+        Assert-True ($null -eq (Get-NormalizedCoreVersion $invalid)) "invalid version accepted: $invalid"
+    }
+    # Node 下限与 LauncherPolicy.SupportedNode 一致：只认稳定版 22.15.0 以上。
+    Assert-True (Test-SupportedNodeVersion '22.15.0') 'floor rejected'
+    Assert-True (Test-SupportedNodeVersion '24.21.0') 'current runtime rejected'
+    foreach ($unsupported in '22.14.0', '22.15.0-rc.1', 'v22', '20.11.1') {
+        Assert-True (-not (Test-SupportedNodeVersion $unsupported)) "unsupported Node accepted: $unsupported"
+    }
+    # 核心目录与启动器 FindDshBin 的首选位置一致。
+    Assert-True ((Get-DshCorePackageDirectory 'C:\AppData') -eq (Join-Path 'C:\AppData' 'npm\node_modules\@deepseek-ai\dsh')) 'core directory differs from launcher lookup'
+    Assert-True ($null -eq (Get-DshCorePackageDirectory '')) 'empty APPDATA accepted'
+    # 候选顺序：便携运行时优先，其次 PATH，最后标准安装目录。
+    $candidates = @(Get-NodeCandidates 'C:\Users\tester' ('D:\a' + [IO.Path]::PathSeparator + 'E:\b') 'C:\Program Files' 'C:\Local')
+    Assert-True ($candidates.Count -eq 5) 'unexpected candidate count'
+    Assert-True ($candidates[0] -eq (Join-Path 'C:\Users\tester' 'dsh-desktop\node\node.exe')) 'portable runtime is not first'
+    Assert-True ($candidates[1] -eq (Join-Path 'D:\a' 'node.exe') -and $candidates[2] -eq (Join-Path 'E:\b' 'node.exe')) 'PATH order not preserved'
+    Assert-True ($candidates[3] -eq (Join-Path 'C:\Program Files' 'nodejs\node.exe')) 'Program Files not after PATH'
+    Assert-True ($candidates[4] -eq (Join-Path 'C:\Local' 'Programs\nodejs\node.exe')) 'LocalAppData not last'
 }
 Write-Host ("PowerShell {0}: {1} cases passed; only temporary directories were modified." -f $PSVersionTable.PSVersion, $passed)
