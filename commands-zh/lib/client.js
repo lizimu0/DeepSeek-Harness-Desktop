@@ -27,9 +27,10 @@ window.__ModuleLoader__.load({
 		];
 
 		function translateOf(text) {
+			if (typeof text !== "string") return void 0;
 			const key = text.trim();
 			if (key === "") return void 0;
-			if (EXACT[key] !== void 0) return EXACT[key];
+			if (Object.prototype.hasOwnProperty.call(EXACT, key)) return EXACT[key];
 			for (const [prefix, zh] of PREFIX) {
 				if (key.startsWith(prefix)) return zh;
 			}
@@ -46,33 +47,103 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		function apply() {
-			if (typeof document === "undefined") return;
-			const attached = new WeakSet();
+		function apply(ctx) {
+			if (typeof document === "undefined" || typeof MutationObserver === "undefined") return;
+			const selector = '[role="listbox"]';
+			const observers = new Map();
+			const pendingRoots = new Set();
+			const dirtyListboxes = new Set();
+			let disposed = false;
+			let scanTimer = null;
+			let bodyObs = null;
 
+			const scheduleScan = () => {
+				if (disposed || scanTimer !== null) return;
+				scanTimer = setTimeout(flush, 200);
+			};
 			const attach = (listbox) => {
-				if (attached.has(listbox)) return;
-				attached.add(listbox);
+				if (disposed || !listbox.isConnected || observers.has(listbox)) return;
 				translate(listbox);
-				// Virtual scrolling re-renders items: keep translating.
-				const obs = new MutationObserver(() => translate(listbox));
+				// Virtual scrolling re-renders items: coalesce translations too.
+				const obs = new MutationObserver(() => {
+					if (disposed || !observers.has(listbox)) return;
+					dirtyListboxes.add(listbox);
+					scheduleScan();
+				});
+				observers.set(listbox, obs);
 				obs.observe(listbox, { childList: true, subtree: true, characterData: true });
 			};
-
-			const scan = () => {
-				for (const listbox of document.querySelectorAll('[role="listbox"]')) attach(listbox);
+			const scan = (root) => {
+				if (disposed || !root.isConnected) return;
+				if (root.matches(selector)) attach(root);
+				for (const listbox of root.querySelectorAll(selector)) attach(listbox);
 			};
-
-			// body 级变更高频，扫描本身要全量 querySelectorAll，防抖 200ms。
-			let scanTimer = null;
-			const scheduleScan = () => {
-				if (scanTimer !== null) return;
-				scanTimer = setTimeout(() => { scanTimer = null; scan(); }, 200);
+			function flush() {
+				scanTimer = null;
+				if (disposed) return;
+				for (const [listbox, obs] of observers) {
+					if (listbox.isConnected && listbox.matches(selector)) continue;
+					obs.disconnect();
+					observers.delete(listbox);
+					dirtyListboxes.delete(listbox);
+				}
+				// Only inspect added subtrees / changed roles, never rescan the page
+				// for unrelated streaming text. Skip roots covered by another root.
+				for (const root of pendingRoots) {
+					let parent = root.parentElement;
+					while (parent && !pendingRoots.has(parent)) parent = parent.parentElement;
+					if (!parent) scan(root);
+				}
+				pendingRoots.clear();
+				for (const listbox of dirtyListboxes) {
+					const obs = observers.get(listbox);
+					if (!obs) continue;
+					translate(listbox);
+					// Our own characterData writes do not need another translation pass.
+					obs.takeRecords();
+				}
+				dirtyListboxes.clear();
+			}
+			const start = () => {
+				if (disposed || bodyObs !== null || !document.body) return;
+				bodyObs = new MutationObserver((records) => {
+					if (disposed) return;
+					let removed = false;
+					for (const record of records) {
+						if (record.type === "attributes") pendingRoots.add(record.target);
+						else {
+							for (const node of record.addedNodes) {
+								if (node.nodeType === 1) pendingRoots.add(node);
+							}
+							if (observers.size) {
+								for (const node of record.removedNodes) {
+									if (node.nodeType === 1) { removed = true; break; }
+								}
+							}
+						}
+					}
+					if (pendingRoots.size || removed) scheduleScan();
+				});
+				bodyObs.observe(document.body, {
+					childList: true, subtree: true, attributes: true, attributeFilter: ["role"],
+				});
+				scan(document.body);
 			};
-
-			const bodyObs = new MutationObserver(scheduleScan);
-			bodyObs.observe(document.body, { childList: true, subtree: true });
-			scan();
+			// Explicit effect ownership also handles function-style apply and client HMR.
+			const dispose = ctx.effect(() => () => {
+				disposed = true;
+				document.removeEventListener("DOMContentLoaded", start);
+				if (scanTimer !== null) clearTimeout(scanTimer);
+				scanTimer = null;
+				bodyObs?.disconnect();
+				for (const obs of observers.values()) obs.disconnect();
+				observers.clear();
+				pendingRoots.clear();
+				dirtyListboxes.clear();
+			}, "commands-zh.observers");
+			if (document.body) start();
+			else document.addEventListener("DOMContentLoaded", start, { once: true });
+			return dispose;
 		}
 
 		exports.apply = apply;

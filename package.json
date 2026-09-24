@@ -1,0 +1,20 @@
+{
+  "name": "dsh-desktop-suite",
+  "version": "0.2.0",
+  "private": true,
+  "workspaces": ["plugin"],
+  "type": "module",
+  "description": "Local DSH desktop launcher and companion plugins",
+  "engines": { "node": ">=24.2.0" },
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "verify": "npm run check && npm test",
+    "test:integration": "node scripts/integration-smoke.mjs",
+    "preview": "node scripts/preview.mjs",
+    "test:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-windows.ps1"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
+}

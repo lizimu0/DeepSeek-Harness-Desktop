@@ -22,5 +22,8 @@
     "lib/**/*.js",
     "cordis.patch.yml"
   ],
+  "dependencies": {
+    "yaml": "^2.9.1"
+  },
   "license": "MIT"
 }

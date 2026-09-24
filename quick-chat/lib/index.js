@@ -7,8 +7,9 @@
  *
  * create() is idempotent (reuses the record for the same canonical path),
  * and the registry may still be initializing when this bundle applies, so
- * provisioning runs through a retry loop: 30 fast attempts, then a slow
- * 30s cadence forever instead of giving up.
+ * provisioning retries with a bounded exponential backoff, then keeps trying
+ * every 30s instead of giving up. Unloading cancels scheduled work and prevents
+ * an in-flight failure from starting the retry loop again.
  */
 import { mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -19,31 +20,41 @@ export const inject = ['workspaceRegistry']
 
 const CHAT_DIR = join(homedir(), 'DeepSeek-Chats')
 const CHAT_TITLE = 'chat'
-const MAX_FAST_ATTEMPTS = 30
+const INITIAL_RETRY_MS = 1000
 const SLOW_RETRY_MS = 30 * 1000
 
 export function apply(ctx) {
-	let attempts = 0
+	let disposed = false
+	let retryMs = INITIAL_RETRY_MS
 	let warnedSlow = false
 	let ensureTimer = null
+	const schedule = (delay) => {
+		if (!disposed) ensureTimer = setTimeout(ensure, delay)
+	}
 	const ensure = async () => {
+		ensureTimer = null
+		if (disposed) return
 		try {
 			mkdirSync(CHAT_DIR, { recursive: true })
 			const workspace = await ctx.workspaceRegistry.create(CHAT_DIR, CHAT_TITLE)
+			if (disposed) return
 			try { ctx.logger?.info?.(`quick-chat: chat workspace ready (${workspace.id})`) } catch { }
 		} catch (error) {
-			if (attempts < MAX_FAST_ATTEMPTS) {
-				attempts += 1
-				ensureTimer = setTimeout(ensure, 1000)
-				return
-			}
-			if (warnedSlow !== true) {
+			if (disposed) return
+			if (retryMs === SLOW_RETRY_MS && !warnedSlow) {
 				warnedSlow = true
-				try { ctx.logger?.warn?.(`quick-chat: registry unavailable after ${MAX_FAST_ATTEMPTS}s, retrying every 30s: ${error}`) } catch { }
+				try { ctx.logger?.warn?.(`quick-chat: workspace provisioning still unavailable, retrying every 30s: ${error}`) } catch { }
 			}
-			ensureTimer = setTimeout(ensure, SLOW_RETRY_MS)
+			schedule(retryMs)
+			retryMs = Math.min(retryMs * 2, SLOW_RETRY_MS)
 		}
 	}
-	setTimeout(ensure, 500)
-	ctx.on('dispose', () => { if (ensureTimer !== null) clearTimeout(ensureTimer) })
+	// Explicit effects also work when Cordis constructs a function-style apply.
+	const dispose = ctx.effect(() => () => {
+		disposed = true
+		if (ensureTimer !== null) clearTimeout(ensureTimer)
+		ensureTimer = null
+	}, 'quick-chat.provisioning')
+	schedule(500)
+	return dispose
 }

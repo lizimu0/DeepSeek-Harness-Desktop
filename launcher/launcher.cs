@@ -6,40 +6,40 @@ using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
 internal static class Program
 {
     internal const int Port = 3080;
-    public static readonly string Url = "http://127.0.0.1:" + Port;
-    /** 就绪 URL（含 dsh 0.1.5+ 的 token）；服务输出解析到之前退回裸地址 */
-    public static string WebUrl = Url;
-    public static NotifyIcon Tray;
-    public static MainForm Form;
-    public static Process ServerCmd;
-    private static readonly object OpenLock = new object();
+    internal static readonly string Url = LauncherPolicy.Origin(Port) + "/";
+    internal static MainForm Form;
+    internal static LauncherService Service;
+    private static NotifyIcon _tray;
+    private static ContextMenuStrip _menu;
+    private static Icon _trayIcon;
+    private static EventWaitHandle _showEvent;
+    private static readonly CancellationTokenSource Lifetime = new CancellationTokenSource();
+    private static SynchronizationContext _ui;
+    private static Task _healthTask, _alertTask, _showTask, _shutdownTask;
+    private static bool _openInFlight;
+    private static int _quitting;
+    internal static bool IsQuitting { get { return Volatile.Read(ref _quitting) != 0; } }
 
     [DllImport("user32.dll")]
     private static extern bool SetProcessDpiAwarenessContext(IntPtr value);
-
     [DllImport("user32.dll")]
     private static extern bool SetProcessDPIAware();
-
     [DllImport("user32.dll")]
     internal static extern uint GetDpiForSystem();
 
     [STAThread]
     private static void Main()
     {
-        try
-        {
-            if (!SetProcessDpiAwarenessContext(new IntPtr(-4))) SetProcessDPIAware();
-        }
-        catch
-        {
-            try { SetProcessDPIAware(); } catch { }
-        }
+        try { if (!SetProcessDpiAwarenessContext(new IntPtr(-4))) SetProcessDPIAware(); }
+        catch { try { SetProcessDPIAware(); } catch { } }
         bool createdNew;
         using (var mutex = new Mutex(true, @"Local\DeepSeekHarnessTray", out createdNew))
         {
@@ -47,831 +47,527 @@ internal static class Program
             {
                 try
                 {
-                    EventWaitHandle ev;
-                    if (EventWaitHandle.TryOpenExisting(@"Local\DeepSeekHarnessShow", out ev))
-                    {
-                        ev.Set();
-                        ev.Dispose();
-                    }
+                    EventWaitHandle existing;
+                    if (EventWaitHandle.TryOpenExisting(@"Local\DeepSeekHarnessShow", out existing))
+                        using (existing) existing.Set();
                 }
-                catch { }
+                catch (UnauthorizedAccessException) { }
                 return;
             }
-
             Application.EnableVisualStyles();
+            var options = new LauncherOptions();
+            Service = new LauncherService(options, token => LauncherRuntime.StartInfo(Port, token), null);
+            _showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\DeepSeekHarnessShow");
             Form = new MainForm();
-
-            var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\DeepSeekHarnessShow");
-            var waiter = new Thread(() =>
+            Service.SessionReady += generation => Post(() => Form.OnSessionReady(generation));
+            _trayIcon = LoadIcon();
+            _menu = new ContextMenuStrip();
+            _menu.Items.Add("打开 DeepSeek Harness", null, (s, e) => RequestOpen());
+            _menu.Items.Add(new ToolStripSeparator());
+            _menu.Items.Add("退出", null, (s, e) => QuitAll());
+            _tray = new NotifyIcon { Icon = _trayIcon, Text = "DeepSeek Harness", ContextMenuStrip = _menu, Visible = true };
+            _tray.DoubleClick += (s, e) => RequestOpen();
+            try { Application.Run(Form); }
+            finally
             {
-                while (true)
+                StopBackground();
+                if (_shutdownTask == null) _shutdownTask = Service.ShutdownAsync();
+                try { _shutdownTask.GetAwaiter().GetResult(); } catch (Exception error) { Service.Log("shutdown: " + error.GetType().Name); }
+                foreach (Task task in new[] { _healthTask, _alertTask, _showTask })
+                    if (task != null) try { task.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
+                _tray.Visible = false;
+                _tray.Dispose();
+                _menu.Dispose();
+                _trayIcon.Dispose();
+                _showEvent.Dispose();
+                Lifetime.Dispose();
+            }
+        }
+    }
+
+    // Called only after the form has a UI-thread-created handle and the message loop exists.
+    internal static void UiReady()
+    {
+        _ui = SynchronizationContext.Current;
+        _showTask = Task.Run(() =>
+        {
+            var handles = new WaitHandle[] { Lifetime.Token.WaitHandle, _showEvent };
+            while (WaitHandle.WaitAny(handles) == 1) Post(RequestOpen);
+        });
+        _healthTask = Task.Run(new Func<Task>(HealthLoopAsync));
+        _alertTask = Task.Run(new Func<Task>(AlertLoopAsync));
+        RequestOpen();
+    }
+
+    internal static void Post(Action action)
+    {
+        var context = _ui;
+        if (context == null || IsQuitting) return;
+        try
+        {
+            context.Post(state =>
+            {
+                if (IsQuitting || Form == null || Form.IsDisposed || Form.Disposing || !Form.IsHandleCreated) return;
+                try { action(); }
+                catch (Exception error) { Service.Log("UI callback: " + error.GetType().Name); }
+            }, null);
+        }
+        catch (InvalidOperationException) { }
+    }
+
+    internal static async void RequestOpen()
+    {
+        if (IsQuitting || Form == null || Form.IsDisposed) return;
+        Form.ActivateWindow(); // Only an explicit open (including initial launch) may take focus.
+        if (_openInFlight) return;
+        _openInFlight = true;
+        Form.BeginManualOpen();
+        try
+        {
+            ReadyResult result = await Service.EnsureReadyAsync();
+            if (IsQuitting || Form.IsDisposed) return;
+            if (result.Ready) await Form.NavigateReadyAsync(false);
+            else Form.ShowFailure(result.Message + "\n日志：" + Service.LogPath);
+        }
+        catch (Exception error)
+        {
+            Service.Log("open failed: " + error.GetType().Name);
+            if (!IsQuitting && !Form.IsDisposed) Form.ShowFailure("打开失败（" + error.GetType().Name + "）。\n日志：" + Service.LogPath);
+        }
+        finally { _openInFlight = false; }
+    }
+
+    private static async Task HealthLoopAsync()
+    {
+        bool notified = false;
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(120), Lifetime.Token).ConfigureAwait(false);
+            while (!Lifetime.IsCancellationRequested)
+            {
+                ReadyResult result = await Service.EnsureReadyAsync().ConfigureAwait(false);
+                if (result.Ready) notified = false;
+                else if (!notified && !Lifetime.IsCancellationRequested)
                 {
-                    showEvent.WaitOne();
-                    EnsureServerAndShow();
+                    notified = true;
+                    Post(() => Balloon("本地服务尚未恢复；不会重复拉起仍在运行的实例。可从托盘重新打开，日志：" + Service.LogPath, ToolTipIcon.Warning));
                 }
-            });
-            waiter.IsBackground = true;
-            waiter.Start();
+                await Task.Delay(TimeSpan.FromSeconds(60), Lifetime.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { Service.Log("health loop stopped: " + error.GetType().Name); }
+    }
 
-            Tray = new NotifyIcon();
-            Tray.Icon = LoadIcon();
-            Tray.Text = "DeepSeek Harness";
-            var menu = new ContextMenuStrip();
-            menu.Items.Add("打开 DeepSeek Harness", null, (s, e) => EnsureServerAndShow());
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add("退出", null, (s, e) => QuitAll());
-            Tray.ContextMenuStrip = menu;
-            Tray.DoubleClick += (s, e) => EnsureServerAndShow();
-            Tray.Visible = true;
-
-            // Balance/budget alerts: poll the balance-card plugin and surface
-            // new alert keys as tray balloon tips (once per key per local day,
-            // remembered across launcher restarts).
-            var alertClient = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            var seenAlerts = LoadSeenAlerts();
-            var seenDay = DateTime.Now.ToString("yyyyMMdd");
-            bool alertsEverSucceeded = false;
-            var alertTimer = new System.Windows.Forms.Timer();
-            alertTimer.Interval = 3000;
-            alertTimer.Tick += (s2, e2) =>
+    private static async Task AlertLoopAsync()
+    {
+        var ledger = new AlertLedger(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeepSeekHarness", "seen-alerts.txt"), DateTime.Now);
+        bool succeeded = false;
+        int delay = 3000;
+        try
+        {
+            while (!Lifetime.IsCancellationRequested)
             {
-                string today = DateTime.Now.ToString("yyyyMMdd");
-                if (today != seenDay) { seenDay = today; seenAlerts.Clear(); }
+                // Delay is AFTER the previous request, so a slow initial 35s GET cannot overlap.
+                await Task.Delay(delay, Lifetime.Token).ConfigureAwait(false);
                 try
                 {
-                    alertClient.GetStringAsync(Url + "/balance-card/alerts").ContinueWith(t =>
+                    AlertResponse response = await Service.GetAlertsAsync(Lifetime.Token).ConfigureAwait(false);
+                    Lifetime.Token.ThrowIfCancellationRequested();
+                    if (response.Status == 200 && response.Alerts != null)
                     {
-                        if (Form == null) return;
-                        Form.BeginInvoke(new Action(() =>
+                        succeeded = true;
+                        bool changed = false;
+                        foreach (LauncherAlert alert in response.Alerts)
                         {
-                            if (t.IsFaulted)
-                            {
-                                // 服务未就绪时 15 秒后重试；成功过一次后保持 5 分钟节奏
-                                if (!alertsEverSucceeded) alertTimer.Interval = 15000;
-                                return;
-                            }
-                            alertsEverSucceeded = true;
-                            alertTimer.Interval = 5 * 60 * 1000;
-                            bool added = false;
-                            try
-                            {
-                                var root = new System.Web.Script.Serialization.JavaScriptSerializer()
-                                    .Deserialize<System.Collections.Generic.Dictionary<string, object>>(t.Result);
-                                object listObj;
-                                if (root != null && root.TryGetValue("alerts", out listObj) && listObj is System.Collections.ArrayList)
-                                {
-                                    foreach (object item in (System.Collections.ArrayList)listObj)
-                                    {
-                                        var entry = item as System.Collections.Generic.Dictionary<string, object>;
-                                        if (entry == null) continue;
-                                        object kv, mv;
-                                        string key = entry.TryGetValue("key", out kv) ? kv as string : null;
-                                        string message = entry.TryGetValue("message", out mv) ? mv as string : null;
-                                        if (key == null || message == null) continue;
-                                        if (seenAlerts.Add(key))
-                                        {
-                                            added = true;
-                                            try { Tray.ShowBalloonTip(8000, "DeepSeek Harness", message, ToolTipIcon.Warning); } catch { }
-                                        }
-                                    }
-                                }
-                            }
-                            catch { /* malformed body: skip */ }
-                            if (added) SaveSeenAlerts(seenAlerts);
-                        }));
-                    });
-                }
-                catch { /* server down: silent */ }
-            };
-            alertTimer.Start();
-
-            // Health monitor: dsh web dying while the launcher lives (crash, OOM,
-            // external kill) used to leave a dead tray until the user reopened the
-            // window. Poll every 60s and restart in the background — a visible
-            // window reloads itself afterwards. Safe against double starts: the
-            // probe runs under OpenLock (shared with the starter thread) and only
-            // one restarter may be in flight, so a concurrently starting server is
-            // detected before a second one is launched.
-            var healthTimer = new System.Windows.Forms.Timer();
-            healthTimer.Interval = 120 * 1000; // grace for a slow cold start; later ticks at 60s
-            bool restartNotified = false;
-            int restartInFlight = 0;
-            healthTimer.Tick += (s2, e2) =>
-            {
-                healthTimer.Interval = 60 * 1000;
-                if (Probe(2000)) { restartNotified = false; return; }
-                if (System.Threading.Interlocked.CompareExchange(ref restartInFlight, 1, 0) != 0) return;
-                var restarter = new Thread(() =>
-                {
-                    try
-                    {
-                        bool failed = false;
-                        lock (OpenLock)
-                        {
-                            if (!Probe(1500))
-                            {
-                                string bin = FindDshBin();
-                                string node = FindNode();
-                                if (bin == null || node == null) failed = true;
-                                else
-                                {
-                                    StartServer(node, bin);
-                                    if (WaitReady(TimeSpan.FromSeconds(120)))
-                                    {
-                                        restartNotified = false;
-                                        if (Form != null) Form.BeginInvoke(new Action(() => Form.ReloadIfVisible()));
-                                    }
-                                    else failed = true;
-                                }
-                            }
+                            if (!ledger.MarkSeen(alert.Key, DateTime.Now)) continue;
+                            changed = true;
+                            string message = alert.Message;
+                            Post(() => Balloon(message, ToolTipIcon.Warning));
                         }
-                        if (failed && !restartNotified)
-                        {
-                            restartNotified = true;
-                            try
-                            {
-                                Form.BeginInvoke(new Action(() =>
-                                {
-                                    try { Tray.ShowBalloonTip(8000, "DeepSeek Harness", "dsh web 意外停止，自动重启失败；每分钟重试。日志：" + LogPath(), ToolTipIcon.Error); } catch { }
-                                }));
-                            }
-                            catch { }
-                        }
+                        if (changed) ledger.Save();
                     }
-                    finally { System.Threading.Interlocked.Exchange(ref restartInFlight, 0); }
-                });
-                restarter.IsBackground = true;
-                restarter.Start();
-            };
-            healthTimer.Start();
-
-            var starter = new Thread(EnsureServerAndShow);
-            starter.IsBackground = true;
-            starter.Start();
-
-            Application.Run(Form);
-            Tray.Visible = false;
-            Tray.Dispose();
-        }
-    }
-
-    public static void ShowWindow()
-    {
-        if (Form == null) return;
-        if (Form.InvokeRequired)
-        {
-            Form.BeginInvoke(new Action(ShowWindow));
-            return;
-        }
-        Form.EnsureNavigated();
-        Form.ActivateWindow();
-    }
-
-    private static void EnsureServerAndShow()
-    {
-        try
-        {
-            EnsureServerAndShowCore();
-        }
-        catch (Exception ex)
-        {
-            // 后台线程上的未处理异常会静默杀死显示路径：窗口不出现、splash 8 秒后
-            // 撤掉露出空白 WebView2，之后托盘与单实例的显示信号也无人响应
-            Log("EnsureServerAndShow 异常: " + ex);
-            Fail("打开 DeepSeek Harness 失败：" + ex.Message + "\n日志：" + LauncherLogPath());
-            try { ShowWindow(); } catch { }
-        }
-    }
-
-    private static void EnsureServerAndShowCore()
-    {
-        lock (OpenLock)
-        {
-            bool alive = Probe(2000);
-            Log("probe=" + (alive ? "alive" : "down"));
-            if (!alive)
-            {
-                string bin = FindDshBin();
-                string node = FindNode();
-                if (bin == null) { Fail("未找到 dsh 安装（@deepseek-ai/dsh 的 lib/bin.js）。"); return; }
-                if (node == null) { Fail("未找到 node.exe，请确认已安装 Node.js 并加入 PATH。"); return; }
-                // 服务偶发启动后立刻退出（端口竞争、初始化失败）：清掉可能失效的
-                // token 再重试一次，避免用户第一眼就是错误页
-                bool ready = false;
-                for (int attempt = 0; attempt < 2 && !ready; attempt++)
-                {
-                    Log("start server node=" + node + " bin=" + bin + " attempt=" + (attempt + 1));
-                    string before = WebUrl;
-                    StartServer(node, bin);
-                    ready = WaitReady(TimeSpan.FromSeconds(120));
-                    // 探活通过可能早于应用打印就绪 URL：等新 token 到达日志再采纳，
-                    // 否则这一轮会先拿旧 token 导航一次（虽能自愈，但白跑一趟）
-                    for (int i = 0; ready && i < 12 && ReferenceEquals(WebUrl, before); i++) Thread.Sleep(250);
-                    if (!ready) WebUrl = Url;
-                }
-                if (!ready)
-                {
-                    Fail("dsh web 未能在 120 秒内就绪。\n日志：" + LogPath());
-                    return;
-                }
-                Log("server ready");
-            }
-            // 每次打开窗口都采纳日志里最新的一条就绪 URL：服务可能在本次打开前
-            // 已重启过（健康监控/上次会话拉起），旧 token 会落到 401/404 错误页。
-            AdoptTokenUrlFromLog();
-            Log("webUrl=" + WebUrl);
-        }
-        if (Form != null) Form.SetSplashStatus("正在加载界面…");
-        ShowWindow();
-    }
-
-    /** Scan the tail of the server log for the most recent ready URL (with token). */
-    public static void AdoptTokenUrlFromLog()
-    {
-        try
-        {
-            string log = LogPath();
-            if (!File.Exists(log)) return;
-            using (var stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-            using (var reader = new StreamReader(stream))
-            {
-                string content = reader.ReadToEnd();
-                var matches = System.Text.RegularExpressions.Regex.Matches(
-                    content, @"http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+");
-                if (matches.Count > 0) WebUrl = matches[matches.Count - 1].Value;
-            }
-        }
-        catch { }
-    }
-
-    public static void QuitAll()
-    {
-        // 只终止本进程启动的 server;按端口查杀会误杀恰好占用 3080 的无关进程
-        try
-        {
-            if (ServerCmd != null && !ServerCmd.HasExited) ServerCmd.Kill();
-        }
-        catch { }
-        if (Form != null)
-        {
-            if (Form.InvokeRequired) Form.BeginInvoke(new Action(() => { Form.ReallyExit = true; Form.Close(); }));
-            else { Form.ReallyExit = true; Form.Close(); }
-        }
-    }
-
-    private static string LogPath()
-    {
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh", "web-server.log");
-    }
-
-    private static readonly object LauncherLogLock = new object();
-
-    private static string LauncherLogPath()
-    {
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dsh", "launcher.log");
-    }
-
-    /** 启动器自身决策日志：探活/拉起/导航/失败都留痕，白屏类故障才有证据链 */
-    public static void Log(string message)
-    {
-        try
-        {
-            string path = LauncherLogPath();
-            lock (LauncherLogLock)
-            using (var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
-            // 显式 UTF-8：默认编码会把中文用户名（路径里的「搁浅」）写成乱码
-            using (var w = new StreamWriter(fs, new System.Text.UTF8Encoding(false)))
-            {
-                w.WriteLine("[" + DateTime.Now.ToString("MM-dd HH:mm:ss") + "] " + message);
-            }
-        }
-        catch { }
-    }
-
-    private static bool Probe(int timeoutMs)
-    {
-        try
-        {
-            var req = (HttpWebRequest)WebRequest.Create(Url);
-            req.Timeout = timeoutMs;
-            req.Method = "GET";
-            using (var resp = (HttpWebResponse)req.GetResponse())
-            {
-                return true;
-            }
-        }
-        catch (WebException ex)
-        {
-            // dsh 0.1.5+ 的裸路径返回 401（token 鉴权），而 GetResponse 对 4xx 抛
-            // WebException：必须把"拿到了 HTTP 响应"当作服务已就绪，否则会误判为
-            // 未启动并重复拉起服务（EADDRINUSE），最终 WebView2 永不导航而成白屏
-            return ex.Response is HttpWebResponse;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static void StartServer(string node, string bin)
-    {
-        string log = LogPath();
-        Directory.CreateDirectory(Path.GetDirectoryName(log));
-        // 日志无限追加会膨胀，超过 5MB 滚动为 .old
-        try
-        {
-            FileInfo fi = new FileInfo(log);
-            if (fi.Exists && fi.Length > 5 * 1024 * 1024)
-            {
-                string old = log + ".old";
-                if (File.Exists(old)) File.Delete(old);
-                File.Move(log, old);
-            }
-        }
-        catch { }
-        // 直接以 node 启动,不再经过 cmd.exe /c 字符串拼接(消除命令注入面),
-        // 日志重定向改为自管:stdout/stderr 异步追加到同一文件
-        // --no-open: dsh web 默认会打开系统默认浏览器,桌面壳用自己的 WebView2 窗口,别再弹浏览器
-        var psi = new ProcessStartInfo(node, "\"" + bin + "\" web --no-open --port " + Port);
-        psi.UseShellExecute = false;
-        psi.CreateNoWindow = true;
-        psi.WorkingDirectory = Path.GetDirectoryName(bin);
-        psi.RedirectStandardOutput = true;
-        psi.RedirectStandardError = true;
-        psi.StandardOutputEncoding = System.Text.Encoding.UTF8;
-        psi.StandardErrorEncoding = System.Text.Encoding.UTF8;
-        ServerCmd = Process.Start(psi);
-        var sync = new object();
-        Action<string> appendLog = line =>
-        {
-            if (line == null) return;
-            try
-            {
-                // dsh 0.1.5+ 的 Web UI 带 token 鉴权：启动输出会给出 /?token=… 的就绪 URL，
-                // 抓下来供 WebView 导航（裸路径会 401）
-                var m = System.Text.RegularExpressions.Regex.Match(
-                    line, @"http://127\.0\.0\.1:\d+/\?token=[A-Za-z0-9_\-]+");
-                if (m.Success) WebUrl = m.Value;
-                lock (sync)
-                {
-                    // 日志可能正被另一个启动器实例以 shell 重定向方式占用；
-                    // AppendAllText 的默认共享模式会抛异常并把崩溃证据整个吞掉
-                    using (var fs = new FileStream(log, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
-                    using (var w = new StreamWriter(fs))
+                    else if (response.Status == 401 || response.Status == 403)
                     {
-                        w.WriteLine("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + line);
+                        // Re-authenticate through the same single-flight root/token path, never
+                        // bypass the plugin's connection.requestRejection guard.
+                        await Service.EnsureReadyAsync().ConfigureAwait(false);
                     }
                 }
+                catch (OperationCanceledException) { if (Lifetime.IsCancellationRequested) throw; }
+                catch (Exception error) { Service.Log("alerts GET skipped: " + error.GetType().Name); }
+                delay = succeeded ? 5 * 60 * 1000 : 15000;
             }
-            catch { }
-        };
-        ServerCmd.OutputDataReceived += (s, e) => appendLog(e.Data);
-        ServerCmd.ErrorDataReceived += (s, e) => appendLog(e.Data);
-        ServerCmd.BeginOutputReadLine();
-        ServerCmd.BeginErrorReadLine();
-    }
-
-    private static bool WaitReady(TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (Probe(1500)) return true;
-            if (ServerCmd != null && ServerCmd.HasExited) return false;
-            Thread.Sleep(250);
         }
-        return Probe(1500);
+        catch (OperationCanceledException) { }
     }
 
-    private static string FindDshBin()
+    private static void Balloon(string text, ToolTipIcon icon)
     {
-        // 全局安装（npm i -g）是刻意安装的版本，优先于 npx 运行残留的缓存
-        string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string global = Path.Combine(appData, "npm", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
-        if (File.Exists(global)) return global;
-
-        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        string npxRoot = Path.Combine(local, "npm-cache", "_npx");
-        if (Directory.Exists(npxRoot))
-        {
-            string best = null;
-            Version bestVersion = null;
-            DateTime bestTime = DateTime.MinValue;
-            foreach (string dir in Directory.GetDirectories(npxRoot))
-            {
-                string p = Path.Combine(dir, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
-                if (!File.Exists(p)) continue;
-                Version v = ReadPackageVersion(Path.Combine(dir, "node_modules", "@deepseek-ai", "dsh", "package.json"));
-                DateTime t = File.GetLastWriteTimeUtc(p);
-                bool better;
-                if (best == null) better = true;
-                else if (v != null && bestVersion != null) better = v > bestVersion || (v == bestVersion && t > bestTime);
-                else if (v != null) better = true;
-                else if (bestVersion != null) better = false;
-                else better = t > bestTime;
-                if (better) { best = p; bestVersion = v; bestTime = t; }
-            }
-            if (best != null) return best;
-        }
-        return null;
+        if (IsQuitting || _tray == null) return;
+        try { _tray.ShowBalloonTip(8000, "DeepSeek Harness", text, icon); }
+        catch (InvalidOperationException) { }
     }
 
-    /** Parse "version" out of package.json (prerelease suffix stripped for comparability). */
-    private static Version ReadPackageVersion(string pkgJson)
+    internal static void StopBackground()
+    {
+        if (Interlocked.Exchange(ref _quitting, 1) != 0) return;
+        Lifetime.Cancel();
+        if (Service != null) Service.RequestStop();
+    }
+
+    private static async void QuitAll()
+    {
+        if (IsQuitting) return;
+        StopBackground();
+        _tray.Visible = false;
+        Form.PrepareForExit();
+        try
+        {
+            _shutdownTask = Service.ShutdownAsync();
+            await Task.WhenAll(_shutdownTask, _healthTask ?? Task.FromResult(0), _alertTask ?? Task.FromResult(0), _showTask ?? Task.FromResult(0));
+        }
+        catch (Exception error) { Service.Log("exit cleanup: " + error.GetType().Name); }
+        finally { if (!Form.IsDisposed) { Form.ReallyExit = true; Form.Close(); } }
+    }
+
+    internal static Icon LoadIcon()
     {
         try
         {
-            foreach (string line in File.ReadLines(pkgJson))
-            {
-                string s = line.Trim();
-                if (!s.StartsWith("\"version\"")) continue;
-                int colon = s.IndexOf(':');
-                if (colon < 0) continue;
-                string val = s.Substring(colon + 1).Trim().Trim(',').Trim('"');
-                int dash = val.IndexOf('-');
-                if (dash > 0) val = val.Substring(0, dash);
-                Version v;
-                if (Version.TryParse(val, out v)) return v;
-                return null;
-            }
-        }
-        catch { }
-        return null;
-    }
-
-    static readonly string SeenAlertsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DeepSeekHarness", "seen-alerts.txt");
-
-    /** Already-shown alert keys for today; stale days are ignored. */
-    private static System.Collections.Generic.HashSet<string> LoadSeenAlerts()
-    {
-        var seen = new System.Collections.Generic.HashSet<string>();
-        try
-        {
-            string[] lines = File.ReadAllLines(SeenAlertsPath);
-            if (lines.Length > 0 && lines[0] == "v1:" + DateTime.Now.ToString("yyyyMMdd"))
-            {
-                for (int i = 1; i < lines.Length; i++)
-                    if (lines[i].Length > 0) seen.Add(lines[i]);
-            }
-        }
-        catch { }
-        return seen;
-    }
-
-    private static void SaveSeenAlerts(System.Collections.Generic.HashSet<string> seen)
-    {
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(SeenAlertsPath));
-            var lines = new System.Collections.Generic.List<string>();
-            lines.Add("v1:" + DateTime.Now.ToString("yyyyMMdd"));
-            lines.AddRange(seen);
-            File.WriteAllLines(SeenAlertsPath, lines.ToArray());
-        }
-        catch { }
-    }
-
-    private static string FindNode()
-    {
-        // dsh 0.1.5+ 的 bin.js 依赖 import.meta.main（Node 24+）；系统 Node 可能较旧，
-        // 优先使用随桌面壳部署的便携 Node（~\dsh-desktop\node\node.exe）
-        string bundled = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "dsh-desktop", "node", "node.exe");
-        if (File.Exists(bundled)) return bundled;
-        var path = Environment.GetEnvironmentVariable("PATH") ?? "";
-        foreach (var d in path.Split(Path.PathSeparator))
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(d)) continue;
-                var p = Path.Combine(d.Trim().Trim('"'), "node.exe");
-                if (File.Exists(p)) return p;
-            }
-            catch { }
-        }
-        string[] extras = {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "nodejs", "node.exe"),
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "nodejs", "node.exe"),
-        };
-        foreach (var p in extras) if (File.Exists(p)) return p;
-        return null;
-    }
-
-    [DllImport("iphlpapi.dll", SetLastError = true)]
-    private static extern uint GetExtendedTcpTable(IntPtr pTcpTable, ref int pdwSize, bool bOrder, int ulAf, int TableClass, uint Reserved);
-
-    // FindPidByPort 已移除:按端口查杀进程会误杀恰好占用 3080 的无关进程,
-    // 退出时只应终止本启动器自己拉起的 ServerCmd。
-
-    public static Icon LoadIcon()
-    {
-        try
-        {
-            string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string png = Path.Combine(exeDir, "icon.png");
+            string png = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "icon.png");
             if (File.Exists(png))
-            {
-                using (var bmp = new Bitmap(png))
-                using (var small = new Bitmap(bmp, 32, 32))
+                using (var bitmap = new Bitmap(png))
+                using (var small = new Bitmap(bitmap, 32, 32))
                 {
-                    IntPtr hicon = small.GetHicon();
-                    try { return Icon.FromHandle(hicon).Clone() as Icon; }
-                    finally { DestroyIcon(hicon); }
+                    IntPtr handle = small.GetHicon();
+                    try { return (Icon)Icon.FromHandle(handle).Clone(); }
+                    finally { DestroyIcon(handle); }
                 }
-            }
         }
-        catch { }
-        return SystemIcons.Application;
+        catch (Exception) { }
+        return (Icon)SystemIcons.Application.Clone();
     }
-
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool DestroyIcon(IntPtr hIcon);
-
-    private static void Fail(string message)
-    {
-        Log("FAIL: " + message.Replace("\r", " ").Replace("\n", " | "));
-        if (Form != null)
-        {
-            try { Form.BeginInvoke(new Action(() => Form.ShowErrorPage(message))); } catch { }
-        }
-        MessageBox.Show(message, "DeepSeek Harness", MessageBoxButtons.OK, MessageBoxIcon.Error);
-    }
+    private static extern bool DestroyIcon(IntPtr icon);
 }
 
-internal class MainForm : Form
+internal sealed class MainForm : Form
 {
-    public bool ReallyExit;
-    private WebView2 _web;
-    private bool _navigated;
-    private int _healAttempts;
-    private bool _healPending;
-    private string _lastNavigatedUrl;
+    internal bool ReallyExit;
+    private readonly WebView2 _web;
+    private readonly RetryBudget _heal = new RetryBudget(5);
+    private readonly System.Windows.Forms.Timer _healTimer = new System.Windows.Forms.Timer();
+    private readonly System.Windows.Forms.Timer _paintTimer = new System.Windows.Forms.Timer();
+    private Task<bool> _initialization;
+    private bool _closing, _navigating, _navigated, _needsNavigation = true;
+    private bool _documentOk, _painted, _rendered;
+    private long _appliedGeneration;
+    private ulong _navigationId;
+    private Panel _splash;
+    private PictureBox _splashPic;
+    private Label _splashLabel;
 
-    public MainForm()
+    internal MainForm()
     {
         Text = "DeepSeek Harness";
         Icon = Program.LoadIcon();
         ShowIcon = true;
         StartPosition = FormStartPosition.CenterScreen;
         float scale = 1f;
-        try
-        {
-            uint dpi = Program.GetDpiForSystem();
-            if (dpi > 0) scale = dpi / 96f;
-        }
-        catch { }
+        try { uint dpi = Program.GetDpiForSystem(); if (dpi > 0) scale = dpi / 96f; } catch { }
         var area = Screen.PrimaryScreen.WorkingArea;
-        int w = Math.Max(760, (int)Math.Min(1280 * scale, area.Width * 0.86));
-        int h = Math.Max(500, (int)Math.Min(840 * scale, area.Height * 0.88));
-        Size = new Size(w, h);
+        Size = new Size(Math.Max(760, (int)Math.Min(1280 * scale, area.Width * 0.86)), Math.Max(500, (int)Math.Min(840 * scale, area.Height * 0.88)));
         MinimumSize = new Size((int)(640 * scale), (int)(420 * scale));
-        BackColor = System.Drawing.Color.White;
-        _web = new WebView2();
-        _web.Dock = DockStyle.Fill;
-        try { _web.DefaultBackgroundColor = System.Drawing.Color.White; } catch { }
+        BackColor = Color.White;
+        _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.White };
         Controls.Add(_web);
-        _web.CoreWebView2InitializationCompleted += (s, e) =>
-        {
-            try
-            {
-                if (e.IsSuccess)
-                {
-                    var core = _web.CoreWebView2;
-                    // 导航白名单:窗口承载 LLM 输出,页面内链接可能被提示注入到钓鱼站,
-                    // 仅放行本机 dsh web 与本地产生的 about/data;其余 http(s) 转交系统浏览器
-                    core.NavigationStarting += (s2, e2) =>
-                    {
-                        try
-                        {
-                            var uri = new Uri(e2.Uri);
-                            bool local = uri.Scheme == "http"
-                                && string.Equals(uri.Host, "127.0.0.1", StringComparison.OrdinalIgnoreCase)
-                                && uri.Port == Program.Port;
-                            bool localScheme = uri.Scheme == "about" || uri.Scheme == "data";
-                            if (!local && !localScheme)
-                            {
-                                if (uri.Scheme == "http" || uri.Scheme == "https")
-                                {
-                                    try { Process.Start(new ProcessStartInfo(e2.Uri) { UseShellExecute = true }); }
-                                    catch { }
-                                }
-                                e2.Cancel = true;
-                            }
-                        }
-                        catch
-                        {
-                            e2.Cancel = true;
-                        }
-                    };
-                    // target=_blank / window.open 统一转系统浏览器,避免弹出窗口绕过白名单
-                    core.NewWindowRequested += (s2, e2) =>
-                    {
-                        try { Process.Start(new ProcessStartInfo(e2.Uri) { UseShellExecute = true }); }
-                        catch { }
-                        e2.Handled = true;
-                    };
-                    // 自愈:服务重启会作废旧 token,旧地址落到 401/404 错误页。
-                    // 主文档导航失败或返回 4xx/5xx 时,采纳日志里最新的就绪地址重试。
-                    core.NavigationCompleted += (s2, e2) =>
-                    {
-                        if (e2.IsSuccess) { _healAttempts = 0; _healPending = false; return; }
-                        ScheduleSelfHeal();
-                    };
-                    core.WebResourceResponseReceived += (s2, e2) =>
-                    {
-                        try
-                        {
-                            if (e2.Response == null || e2.Response.StatusCode < 400) return;
-                            if (!string.Equals(new Uri(e2.Request.Uri).AbsolutePath, "/", StringComparison.Ordinal)) return;
-                            ScheduleSelfHeal();
-                        }
-                        catch { }
-                    };
-#if !DEBUG
-                    // 发布版关闭 DevTools,减少暴露面(调试构建保留)
-                    core.Settings.AreDevToolsEnabled = false;
-#endif
-                    core.AddScriptToExecuteOnDocumentCreatedAsync(
-                        "(function(){function chk(){var ok=false;try{for(var i=0;i<document.body.children.length;i++){var n=document.body.children[i];if(n.tagName!=='SCRIPT'&&n.tagName!=='STYLE'&&n.getBoundingClientRect().height>50){ok=true;break}}}catch(x){}if(ok){try{window.chrome.webview.postMessage('dsh-ui-ready')}catch(x){}}else{setTimeout(chk,100)}}chk()})();");
-                }
-            }
-            catch { }
-        };
-        _web.WebMessageReceived += (s, e) =>
-        {
-            try { if (e.TryGetWebMessageAsString() == "dsh-ui-ready") BeginInvoke(new Action(HideSplash)); } catch { }
-        };
-        try { _web.EnsureCoreWebView2Async(); } catch { }
         BuildSplash();
+        _healTimer.Tick += HealTick;
+        _paintTimer.Interval = 20000;
+        _paintTimer.Tick += (s, e) =>
+        {
+            _paintTimer.Stop();
+            if (!_rendered) SetStatus("服务已连接，界面仍在加载。可从托盘重新打开重试。", true);
+        };
+        Shown += (s, e) => Program.UiReady();
     }
 
-    private Panel _splash;
-    private PictureBox _splashPic;
-    private Label _splashLabel;
-
-    /** Branded splash shown instantly while WebView2 warms up and the page paints. */
-    private void BuildSplash()
+    private async Task<bool> InitializeWebAsync()
     {
-        _splash = new Panel();
-        _splash.Dock = DockStyle.Fill;
-        _splash.BackColor = System.Drawing.Color.White;
-        _splashPic = new PictureBox();
         try
         {
-            string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            string png = Path.Combine(exeDir, "icon.png");
+            await _web.EnsureCoreWebView2Async();
+            if (_closing || IsDisposed || Program.IsQuitting) return false;
+            var core = _web.CoreWebView2;
+            core.NavigationStarting += NavigationStarting;
+            core.NewWindowRequested += (s, e) =>
+            {
+                e.Handled = true;
+                if (_closing || Program.IsQuitting || !e.IsUserInitiated) return;
+                Uri local;
+                if (LauncherPolicy.TryLocalUri(e.Uri, Program.Port, out local)) { core.Navigate(local.AbsoluteUri); return; }
+                OpenExternal(e.Uri, e.IsUserInitiated, false);
+            };
+            core.NavigationCompleted += (s, e) =>
+            {
+                if (_closing || Program.IsQuitting || e.NavigationId != _navigationId) return;
+                // WebView reports transport success even for HTTP 401/404/500.
+                _documentOk = e.IsSuccess && e.HttpStatusCode == 200;
+                if (!_documentOk)
+                {
+                    Program.Service.Log("navigation failed: http=" + e.HttpStatusCode + " webError=" + e.WebErrorStatus);
+                    ScheduleSelfHeal();
+                    return;
+                }
+                FinishPaint();
+            };
+            core.WebMessageReceived += (s, e) =>
+            {
+                if (_closing || Program.IsQuitting) return;
+                try
+                {
+                    Uri source;
+                    if (LauncherPolicy.TryLocalUri(e.Source, Program.Port, out source)
+                        && string.Equals(e.Source, core.Source, StringComparison.Ordinal)
+                        && e.TryGetWebMessageAsString() == "dsh-ui-ready")
+                    { _painted = true; FinishPaint(); }
+                }
+                catch (ArgumentException) { }
+            };
+#if !DEBUG
+            core.Settings.AreDevToolsEnabled = false;
+#endif
+            // Bounded top-document paint detection. HTTP readiness alone does not dismiss splash.
+            await core.AddScriptToExecuteOnDocumentCreatedAsync(
+                "(function(){if(window.top!==window)return;var tries=0;function chk(){var ok=false;try{if(document.body)for(var i=0;i<document.body.children.length;i++){var n=document.body.children[i];if(n.tagName!=='SCRIPT'&&n.tagName!=='STYLE'&&n.getBoundingClientRect().height>50){ok=true;break}}}catch(x){}if(ok){try{window.chrome.webview.postMessage('dsh-ui-ready')}catch(x){}}else if(++tries<300){setTimeout(chk,100)}}chk()})();");
+            return !_closing && !Program.IsQuitting;
+        }
+        catch (Exception error)
+        {
+            Program.Service.Log("WebView2 initialization: " + error.GetType().Name);
+            if (!_closing && !Program.IsQuitting) ShowFailure("WebView2 未能初始化，请确认已安装 Microsoft Edge WebView2 Runtime。\n日志：" + Program.Service.LogPath);
+            _initialization = null;
+            return false;
+        }
+    }
+
+    private void NavigationStarting(object sender, CoreWebView2NavigationStartingEventArgs e)
+    {
+        if (_closing || Program.IsQuitting) { e.Cancel = true; return; }
+        Uri local;
+        if (LauncherPolicy.TryLocalUri(e.Uri, Program.Port, out local))
+        {
+            _navigationId = e.NavigationId;
+            _documentOk = false;
+            _painted = false;
+            _rendered = false;
+            SetStatus("正在加载界面…", true);
+            _paintTimer.Stop();
+            _paintTimer.Start();
+            return;
+        }
+        // about/data/file/custom schemes from web content are not trusted native error pages.
+        if (e.Uri == "about:blank" && !_navigated && !e.IsUserInitiated) return;
+        e.Cancel = true;
+        OpenExternal(e.Uri, e.IsUserInitiated, e.IsRedirected);
+    }
+
+    private static void OpenExternal(string value, bool userInitiated, bool redirected)
+    {
+        Uri uri;
+        if (!LauncherPolicy.TryExternalUri(value, userInitiated, redirected, Program.Port, out uri)) return;
+        try { Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); }
+        catch (Exception error) { Program.Service.Log("external browser failed: " + error.GetType().Name); }
+    }
+
+    internal void BeginManualOpen()
+    {
+        _healTimer.Stop();
+        _heal.Reset();
+        if (!_rendered) SetStatus("正在检查本地服务…", true);
+    }
+
+    internal async void OnSessionReady(long generation)
+    {
+        if (_closing || Program.IsQuitting) return;
+        if (generation != _appliedGeneration) _needsNavigation = true;
+        if (!Visible) return; // Remember invalidation; next manual open will navigate.
+        try { await NavigateReadyAsync(false); }
+        catch (Exception error) { Program.Service.Log("session navigation: " + error.GetType().Name); }
+    }
+
+    internal async Task NavigateReadyAsync(bool force)
+    {
+        if (_closing || Program.IsQuitting) return;
+        if (force) _needsNavigation = true;
+        if (!Visible || _navigating) return;
+        _navigating = true;
+        try
+        {
+            if (_initialization == null) _initialization = InitializeWebAsync();
+            if (!await _initialization || _closing || Program.IsQuitting) return;
+            if (!Visible) { _needsNavigation = true; return; }
+            BrowserSession session = Program.Service.BrowserCookies();
+            if (session == null) { _needsNavigation = true; return; }
+            if (_navigated && !_needsNavigation && session.Generation == _appliedGeneration && _rendered) return;
+            var manager = _web.CoreWebView2.CookieManager;
+            foreach (Cookie cookie in session.Cookies)
+            {
+                var browserCookie = manager.CreateCookie(cookie.Name, cookie.Value, cookie.Domain, cookie.Path);
+                browserCookie.IsHttpOnly = cookie.HttpOnly;
+                browserCookie.IsSecure = cookie.Secure;
+                browserCookie.SameSite = CoreWebView2CookieSameSiteKind.Strict;
+                if (cookie.Expires != DateTime.MinValue) browserCookie.Expires = cookie.Expires.ToUniversalTime();
+                manager.AddOrUpdateCookie(browserCookie);
+            }
+            _needsNavigation = false;
+            _navigated = true;
+            _appliedGeneration = session.Generation;
+            Program.Service.Log("navigate clean local root; session=" + session.Generation);
+            _web.CoreWebView2.Navigate(Program.Url);
+        }
+        catch (Exception error)
+        {
+            _needsNavigation = true;
+            Program.Service.Log("navigate failed: " + error.GetType().Name);
+            ScheduleSelfHeal();
+        }
+        finally { _navigating = false; }
+    }
+
+    private void FinishPaint()
+    {
+        if (!_documentOk || !_painted || _closing || Program.IsQuitting) return;
+        _rendered = true;
+        _healTimer.Stop();
+        _heal.Reset();
+        _paintTimer.Stop();
+        _splash.Visible = false;
+        // Do not Show/Activate here: delayed paint must not restore a user-hidden window.
+    }
+
+    private void ScheduleSelfHeal()
+    {
+        _needsNavigation = true;
+        if (_closing || Program.IsQuitting || !Visible) return;
+        int delay;
+        if (!_heal.TrySchedule(out delay))
+        {
+            if (!_heal.Pending) ShowFailure("界面重试已达到上限，可从托盘重新打开。\n日志：" + Program.Service.LogPath);
+            return;
+        }
+        _paintTimer.Stop();
+        SetStatus("界面未就绪，正在恢复本地会话（" + _heal.Attempts + "/5）…", true);
+        _healTimer.Interval = delay;
+        _healTimer.Start();
+    }
+
+    private async void HealTick(object sender, EventArgs e)
+    {
+        _healTimer.Stop();
+        bool retry = false;
+        try
+        {
+            if (_closing || Program.IsQuitting || !Visible) return;
+            ReadyResult result = await Program.Service.EnsureReadyAsync();
+            if (_closing || Program.IsQuitting || !Visible) return;
+            if (result.Ready) await NavigateReadyAsync(true);
+            else { SetStatus(result.Message, true); retry = true; }
+        }
+        catch (Exception error) { Program.Service.Log("navigation recovery: " + error.GetType().Name); retry = true; }
+        finally { _heal.CompleteAttempt(); }
+        if (retry && !_closing && !Program.IsQuitting) ScheduleSelfHeal();
+    }
+
+    private void BuildSplash()
+    {
+        _splash = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+        _splashPic = new PictureBox { SizeMode = PictureBoxSizeMode.Zoom, Size = new Size(110, 110) };
+        try
+        {
+            string png = Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "icon.png");
             if (File.Exists(png)) _splashPic.Image = new Bitmap(png);
         }
-        catch { }
-        _splashPic.SizeMode = PictureBoxSizeMode.Zoom;
-        _splashPic.Size = new Size(110, 110);
-        _splashLabel = new Label();
-        _splashLabel.Text = "DeepSeek Harness 正在启动服务…";
-        _splashLabel.AutoSize = true;
-        _splashLabel.ForeColor = System.Drawing.Color.FromArgb(70, 70, 80);
-        _splashLabel.Font = new Font("Segoe UI", 11f);
+        catch (Exception) { }
+        _splashLabel = new Label
+        {
+            Text = "DeepSeek Harness 正在启动服务…", AutoSize = true,
+            ForeColor = Color.FromArgb(70, 70, 80), Font = new Font("Segoe UI", 11f), TextAlign = ContentAlignment.MiddleCenter
+        };
         _splash.Controls.Add(_splashPic);
         _splash.Controls.Add(_splashLabel);
         Controls.Add(_splash);
         _splash.BringToFront();
-        _splash.Resize += (s2, e2) => CenterSplash();
+        _splash.Resize += (s, e) => CenterSplash();
         CenterSplash();
-        var fallback = new System.Windows.Forms.Timer();
-        fallback.Interval = 8000;
-        fallback.Tick += (s2, e2) => { fallback.Stop(); HideSplash(); };
-        fallback.Start();
     }
 
     private void CenterSplash()
     {
-        if (_splash == null || _splashPic == null || _splashLabel == null) return;
+        if (_splash == null) return;
+        _splashLabel.MaximumSize = new Size(Math.Max(200, _splash.ClientSize.Width - 80), 0);
         _splashPic.Left = (_splash.ClientSize.Width - _splashPic.Width) / 2;
-        _splashPic.Top = (_splash.ClientSize.Height - _splashPic.Height) / 2 - 40;
+        _splashPic.Top = Math.Max(20, (_splash.ClientSize.Height - _splashPic.Height - _splashLabel.Height - 24) / 2);
         _splashLabel.Left = (_splash.ClientSize.Width - _splashLabel.Width) / 2;
         _splashLabel.Top = _splashPic.Top + _splashPic.Height + 24;
     }
-
-    /** Remove the splash once the web content has actually painted. */
-    public void HideSplash()
+    private void SetStatus(string text, bool show)
     {
-        if (_splash == null) return;
-        _splash.Visible = false;
-        ActivateWindow();
-    }
-
-    /** Update the splash status line (safe from any thread). */
-    public void SetSplashStatus(string text)
-    {
-        if (_splash == null || _splashLabel == null) return;
-        if (InvokeRequired) { BeginInvoke(new Action<string>(SetSplashStatus), text); return; }
+        if (_closing || IsDisposed) return;
         _splashLabel.Text = text;
+        if (show) { _splash.Visible = true; _splash.BringToFront(); }
         CenterSplash();
     }
-
-    /** Restore from minimized + focus. */
-    public void ActivateWindow()
+    internal void ShowFailure(string reason)
     {
+        if (_closing || Program.IsQuitting) return;
+        _paintTimer.Stop();
+        _needsNavigation = true;
+        _rendered = false;
+        Program.Service.Log("open not ready: " + reason);
+        SetStatus(reason, true); // Native error UI, not navigable data: HTML.
+    }
+    internal void ActivateWindow()
+    {
+        if (_closing || Program.IsQuitting) return;
         Show();
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Activate();
     }
-
-    /** Reload the webview after a background server restart — only when the
-     *  window is on screen; a hidden window re-navigates on next open anyway.
-     *  Navigates to the fresh ready URL (new boot mints a new token). */
-    public void ReloadIfVisible()
+    internal void PrepareForExit()
     {
-        try
-        {
-            if (!Visible) return;
-            if (_web != null && _web.CoreWebView2 != null && Program.WebUrl != null) _web.Source = new Uri(Program.WebUrl);
-        }
-        catch { }
+        if (_closing) return;
+        _closing = true;
+        _healTimer.Stop();
+        _paintTimer.Stop();
+        _heal.CompleteAttempt();
     }
-
-    public void EnsureNavigated()
-    {
-        // 每次导航前重新采纳日志里最新的一条就绪 URL：服务换发 token 后，
-        // 这次打开就能直接进新页面，而不是停在旧地址的 401/404 上。
-        Program.AdoptTokenUrlFromLog();
-        string target = Program.WebUrl;
-        if (_navigated && target == _lastNavigatedUrl) return;
-        _lastNavigatedUrl = target;
-        _navigated = true;
-        try
-        {
-            Program.Log("navigate " + target);
-            _web.Source = new Uri(target);
-        }
-        catch (Exception ex)
-        {
-            _navigated = false;
-            _lastNavigatedUrl = null;
-            Program.Log("navigate failed: " + ex.Message);
-        }
-    }
-
-    /** 有界自愈：主文档 4xx/5xx 或导航失败后，采纳最新就绪地址重试（退避递增）。 */
-    public void ScheduleSelfHeal()
-    {
-        if (InvokeRequired) { try { BeginInvoke(new Action(ScheduleSelfHeal)); } catch { } return; }
-        // 一次失败会同时触发 NavigationCompleted 与响应码两条路径，去重避免重复消耗重试额度
-        if (_healPending || _healAttempts >= 5) return;
-        _healPending = true;
-        _healAttempts++;
-        Program.Log("self-heal attempt " + _healAttempts);
-        var timer = new System.Windows.Forms.Timer { Interval = 800 * _healAttempts };
-        timer.Tick += (s2, e2) =>
-        {
-            timer.Stop();
-            timer.Dispose();
-            _healPending = false;
-            _navigated = false;
-            _lastNavigatedUrl = null;
-            EnsureNavigated();
-        };
-        timer.Start();
-    }
-
-    /** 失败时把窗口亮出来并给出可读原因；白窗本身就是最难排查的症状 */
-    public void ShowErrorPage(string reason)
-    {
-        try
-        {
-            string html = "<!doctype html><meta charset='utf-8'><body style='font:14px/1.8 system-ui,sans-serif;padding:48px;color:#333'>"
-                + "<h2 style='font-size:16px;margin:0 0 12px'>DeepSeek Harness 未能加载界面</h2>"
-                + "<pre style='white-space:pre-wrap;color:#a00;font:12px/1.6 monospace'>"
-                + System.Net.WebUtility.HtmlEncode(reason ?? "") + "</pre>"
-                + "<p style='color:#888'>处理后可从托盘图标重新打开；启动器决策日志见 ~/.dsh/launcher.log</p></body>";
-            _web.Source = new Uri("data:text/html;charset=utf-8," + Uri.EscapeDataString(html));
-            ActivateWindow();
-        }
-        catch { }
-    }
-
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (!ReallyExit)
+        if (!ReallyExit && e.CloseReason != CloseReason.WindowsShutDown && e.CloseReason != CloseReason.TaskManagerClosing)
         {
             e.Cancel = true;
+            _healTimer.Stop();
+            _paintTimer.Stop();
+            _heal.CompleteAttempt();
             Hide();
             return;
         }
-        try { _web.Dispose(); } catch { }
+        PrepareForExit();
+        Program.StopBackground();
         base.OnFormClosing(e);
     }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            PrepareForExit();
+            _healTimer.Dispose();
+            _paintTimer.Dispose();
+            if (_splashPic != null && _splashPic.Image != null) { _splashPic.Image.Dispose(); _splashPic.Image = null; }
+            if (Icon != null) { Icon.Dispose(); Icon = null; }
+        }
+        base.Dispose(disposing);
+    }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
